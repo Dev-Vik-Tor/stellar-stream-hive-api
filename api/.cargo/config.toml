@@ -1,0 +1,14 @@
+# Ensures the self-contained CRT objects and import libraries shipped by rustup
+# (dllcrt2.o, libkernel32.a, etc., under
+# <toolchain>/lib/rustlib/x86_64-pc-windows-gnu/lib/self-contained) are used when
+# linking on the `x86_64-pc-windows-gnu` target. Without this, linking fails with
+# "cannot find -lkernel32" / "cannot find dllcrt2.o" because the target's runtime
+# objects and import libraries have moved under `self-contained` in recent rustup
+# distributions and are no longer picked up by default.
+#
+# This still requires a working `as` (assembler) and `dlltool` on PATH -- a full
+# MinGW-w64 toolchain (e.g. https://github.com/niXman/mingw-builds-binaries or
+# MSYS2's mingw-w64-x86_64-toolchain package) providing both. See README.md's
+# "Building on Windows" section for the exact PATH setup used in CI/dev here.
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "link-self-contained=yes"]
