@@ -1,0 +1,25 @@
+## Rust
+/api/target
+**/*.rs.bk
+*.pdb
+
+## Node / Next.js
+/docs/node_modules
+/docs/.next/
+/docs/out/
+/docs/build
+/docs/.env*.local
+/docs/next-env.d.ts
+/docs/.turbo
+
+## Env
+.env
+*.env
+!.env.example
+
+## OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
