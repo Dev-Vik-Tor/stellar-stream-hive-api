@@ -1,0 +1,124 @@
+import CalloutBox from "@/components/CalloutBox";
+
+export const metadata = {
+  title: "Web App Guide",
+  description:
+    "Connecting Freighter, creating a stream, watching a balance accrue, withdrawing, and cancelling from the Stellar Stream Hive web app.",
+};
+
+# Web App Guide
+
+The web app ([`stellar-stream-hive-frontend`](https://github.com/Stellar-Hive/stellar-stream-hive-frontend))
+is the point-and-click way to use Stellar Stream Hive without touching the CLI
+or writing any code. This guide walks through the full lifecycle of a stream
+from the web app's perspective. Everything here is a thin UI over the same
+contract calls documented in [Contract References](/docs/contracts/stream) and
+the same data served by the [indexer API](/docs/api/overview) -- nothing the
+web app does is privileged or otherwise unavailable to you directly.
+
+## Connecting Freighter
+
+1. Install the [Freighter](https://www.freighter.app/) browser extension and
+   create or import an account.
+2. In Freighter's network selector, choose **Test Net** to match the web
+   app's default network (see [Network Guide](/docs/getting-started#network-guide)
+   if you need to point it at a different network).
+3. On the web app, click **Connect Wallet**. Freighter will prompt you to
+   approve the connection -- approving only shares your public address with
+   the site; it never shares your secret key, and no transaction is signed at
+   this step.
+4. Once connected, the app displays your address and testnet XLM balance in
+   the header.
+
+<CalloutBox variant="info">
+  If your testnet account has no funds yet, use
+  [Friendbot](https://laboratory.stellar.org/#account-creator?network=test)
+  to fund it before continuing -- creating a stream requires enough balance to
+  cover both the streamed amount and the transaction fee.
+</CalloutBox>
+
+## Creating a stream
+
+1. Click **New Stream** from the dashboard.
+2. Fill in the form:
+   - **Recipient** -- the `G...` address that will receive the stream.
+   - **Token** -- defaults to native XLM; can be set to any SEP-41 token
+     contract address.
+   - **Amount** -- the total amount to lock, in the token's display units
+     (the app converts to the token's smallest unit, e.g. stroops for XLM,
+     under the hood).
+   - **Start** and **End** -- pick calendar dates/times; the app converts
+     these to ledger sequence numbers internally by estimating from the
+     current ledger and Stellar's ~5-second ledger close time (see
+     [Streaming Math](/docs/concepts/streaming-math#the-mental-model)).
+   - **Cliff** (optional) -- a date before which nothing is withdrawable, even
+     though accrual has started. Leave blank for no cliff.
+   - **Cancellable** -- whether you (the sender) can cancel this stream
+     later. This cannot be changed after creation.
+3. Click **Create Stream**. Freighter will prompt you to sign the
+   `create_stream` transaction. This is the only signature required to fund
+   the entire stream -- the app performs the token approval and the
+   `create_stream` call together.
+4. Once confirmed, the new stream appears on your dashboard with status
+   **Pending** (if its start time is in the future) or **Active**.
+
+## Watching a balance accrue
+
+Open any stream's detail page to see a live-updating progress bar and two
+figures:
+
+- **Streamed** -- the total vested so far (`streamed_amount`).
+- **Withdrawable** -- what the recipient could withdraw right now
+  (`withdrawable_amount`).
+
+These numbers are re-fetched from the [indexer API](/docs/api/overview)
+on a short interval (a few seconds) while the page is open, so a stream in
+progress visibly ticks upward without needing a manual refresh. The
+underlying computation is exactly the formula in
+[Streaming Math](/docs/concepts/streaming-math) -- the web app does not invent
+its own accrual logic, it reads the same numbers the API and the contract
+itself would compute.
+
+<CalloutBox variant="warning" title="Before the cliff, Withdrawable stays at zero">
+  If a stream has a cliff, expect **Streamed** to climb from the moment the
+  page loads (once `start_ledger` has passed) while **Withdrawable** stays
+  pinned at `0` until `cliff_ledger` is reached, at which point it jumps to
+  match everything accrued since `start_ledger`. This is expected --
+  see [Cliff behavior](/docs/concepts/streaming-math#cliff-behavior).
+</CalloutBox>
+
+## Withdrawing
+
+From a stream's detail page, the recipient sees a **Withdraw** button
+whenever `withdrawable_amount > 0`:
+
+1. Click **Withdraw**. The app defaults to withdrawing the full available
+   amount (calling `withdraw_max`), or you can specify a smaller amount.
+2. Freighter prompts you to sign. Only the connected wallet's address needs to
+   match the stream's `recipient` -- the contract enforces this itself (see
+   [Stream contract: withdraw](/docs/contracts/stream#withdraw)), so
+   attempting to withdraw from an account that isn't the recipient will be
+   rejected by the contract, not silently allowed by the UI.
+3. Once confirmed, the withdrawn amount lands in your wallet immediately, and
+   **Withdrawable** resets toward `0` (climbing again as more time passes).
+
+## Cancelling a stream
+
+Only visible to the sender, and only when the stream was created with
+**Cancellable** set to true:
+
+1. From the stream's detail page, click **Cancel Stream**.
+2. The app shows a confirmation with the exact split that will occur --
+   how much the recipient will keep (everything streamed so far) and how much
+   will be refunded back to you -- computed via
+   [Streaming Math: what happens on cancel](/docs/concepts/streaming-math#what-happens-on-cancel).
+3. Confirm and sign with Freighter. Once the transaction lands, the stream's
+   status changes to **Cancelled**, the recipient's already-accrued portion
+   becomes immediately withdrawable (if it wasn't already), and the remainder
+   is refunded to you in the same transaction.
+
+<CalloutBox variant="danger" title="Cancellation is immediate and irreversible">
+  There is no "undo cancel." Once confirmed, the stream stops accruing
+  permanently at that ledger. If you're unsure, double-check the amounts
+  shown in the confirmation dialog before signing.
+</CalloutBox>
