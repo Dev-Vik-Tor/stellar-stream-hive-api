@@ -1,0 +1,249 @@
+import CalloutBox from "@/components/CalloutBox";
+
+export const metadata = {
+  title: "Streaming Math",
+  description:
+    "The exact linear accrual formula behind Stellar Stream Hive, derived step by step with a worked example.",
+};
+
+# Streaming Math
+
+This page derives, from first principles, the exact formula the Stream contract
+uses to decide how much of a stream has vested at any moment. Everything on this
+page is normative: the Rust indexer in `stellar-stream-hive-api` re-implements this
+formula verbatim (see `api/src/streaming_math.rs`), and the Stream contract in
+`stellar-stream-hive-contract` is the source of truth it mirrors. If you only read
+one page before integrating with or auditing this platform, read this one.
+
+## The mental model
+
+A stream is a promise: "recipient will be able to withdraw `total_amount`,
+spread linearly between `start_ledger` and `end_ledger`." Nothing is transferred
+up front except into a vault (see [Security Model](/docs/concepts/security-model));
+what changes over time is how much of that already-locked amount the recipient is
+*entitled* to withdraw.
+
+Three ledger sequence numbers define a stream's schedule:
+
+- **`start_ledger`** &mdash; the ledger at which accrual begins.
+- **`end_ledger`** &mdash; the ledger at which the stream is fully vested.
+- **`cliff_ledger`** &mdash; the ledger before which nothing is *withdrawable*, even
+  though accrual may already be underway. `cliff_ledger >= start_ledger` always;
+  when a stream has no cliff, `cliff_ledger == start_ledger`.
+
+Stellar produces a ledger roughly every 5 seconds, so ledger sequence numbers are
+this platform's clock. Every formula below is expressed in ledgers, not
+wall-clock time, because ledgers are what the contract can actually read
+(`env.ledger().sequence()`) and agree on deterministically.
+
+## Deriving the formula
+
+We want a function `streamed_amount(current_ledger)` that is 0 before the stream
+starts, grows linearly while it's active, and equals `total_amount` once it's
+over.
+
+**Step 1 &mdash; how far through the schedule are we?** Clamp `current_ledger` to
+`end_ledger` so we never treat "time since start" as larger than the stream's
+total duration, then subtract `start_ledger`:
+
+```text
+elapsed = min(current_ledger, end_ledger) - start_ledger
+```
+
+**Step 2 &mdash; how long is the schedule, total?**
+
+```text
+total_duration = end_ledger - start_ledger
+```
+
+**Step 3 &mdash; what fraction of `total_amount` corresponds to that elapsed
+time?** `elapsed / total_duration` is that fraction, so:
+
+```text
+streamed_amount = (total_amount * elapsed) / total_duration
+```
+
+**Step 4 &mdash; how much of that is still owed?** Subtract whatever the
+recipient has already withdrawn:
+
+```text
+withdrawable_amount = streamed_amount - withdrawn
+```
+
+That's the entire formula. Everything else on this page is about the details
+that make it correct and safe to use with real money: integer precision, the
+cliff, and the edges.
+
+<CalloutBox variant="info" title="Reference implementation">
+  `api/src/streaming_math.rs` implements exactly these four steps with checked
+  `i128` arithmetic. The Rust signature is
+  `streamed_amount(total_amount, start_ledger, end_ledger, cliff_ledger, current_ledger) -> Result<i128, MathError>`.
+  Its 13 unit tests encode every example and edge case on this page.
+</CalloutBox>
+
+## Worked example: a 30-day, 3,000 XLM payroll stream
+
+Say an employer streams **3,000 XLM** to a contractor over **30 days**, with no
+cliff. XLM has 7 decimal places, so amounts are stored in stroops
+(1 XLM = 10,000,000 stroops):
+
+```text
+total_amount = 3000 * 10_000_000 = 30_000_000_000 stroops
+```
+
+At roughly 5 seconds per ledger, 30 days is:
+
+```text
+30 days = 2,592,000 seconds = 518,400 ledgers
+```
+
+Suppose the stream starts at `start_ledger = 1,000,000`, so
+`end_ledger = 1,518,400` and `total_duration = 518,400`.
+
+| Time elapsed | `current_ledger` | `elapsed` | `streamed_amount` | in XLM   | `withdrawable` (nothing withdrawn yet) |
+|--------------|-------------------|-----------|--------------------|----------|------------------------------------------|
+| 0 days (start) | 1,000,000       | 0         | 0                  | 0 XLM    | 0 XLM                                     |
+| 1 day        | 1,017,280         | 17,280    | 1,000,000,000      | 100 XLM  | 100 XLM                                   |
+| 7.5 days (1/4) | 1,129,600       | 129,600   | 7,500,000,000      | 750 XLM  | 750 XLM                                   |
+| 15 days (1/2)  | 1,259,200       | 259,200   | 15,000,000,000 *   | 1,500 XLM| 1,500 XLM                                  |
+| 30 days (end)  | 1,518,400       | 518,400   | 30,000,000,000     | 3,000 XLM| 3,000 XLM                                  |
+| 45 days (past end) | 1,777,600   | 518,400 (capped) | 30,000,000,000 | 3,000 XLM| 3,000 XLM (never exceeds total_amount) |
+
+<CalloutBox variant="info">
+  \* 15 days is exactly half of 518,400 ledgers (259,200), so this row lands on
+  precisely half: `30,000,000,000 * 259,200 / 518,400 = 15,000,000,000` stroops,
+  i.e. 1,500 XLM. Every row in this table divides evenly, so none of them show
+  truncation -- the "Why multiply before divide" section below picks a case
+  that doesn't divide evenly, to make the truncation visible.
+</CalloutBox>
+
+Now suppose the recipient withdraws 500 XLM at the 7.5-day mark. From then on,
+`withdrawn = 5_000_000_000`, so at the 15-day mark:
+
+```text
+streamed_amount   = 15_000_000_000  (unchanged -- withdrawals don't affect accrual)
+withdrawable       = 15_000_000_000 - 5_000_000_000 = 10_000_000_000  (1,000 XLM)
+```
+
+## Why multiply before divide
+
+Integer division in Rust (and in Soroban's `i128`) truncates. Order of
+operations therefore matters, and it is not just a style preference: it
+determines whether the recipient is systematically underpaid.
+
+Compare the two orders for our 30-day stream (`total_amount = 30,000,000,000`,
+`total_duration = 518,400`). "Divide first" computes a per-ledger rate once,
+then multiplies by `elapsed`:
+
+```text
+# Divide first (WRONG):
+rate_per_ledger = total_amount / total_duration
+                = 30_000_000_000 / 518_400
+                = 57,870                    # truncated from 57,870.3703...
+streamed_amount(elapsed) = rate_per_ledger * elapsed
+```
+
+That single truncation of the rate -- from `57,870.3703...` down to `57,870`
+-- happens once, but it's *reused* at every `elapsed`, so the lost
+`0.3703...` stroops-per-ledger never gets recovered; it just accumulates:
+
+```text
+elapsed        divide-first        multiply-first        drift
+      1             57,870               57,870              0
+      3            173,610              173,611             -1
+     10            578,700              578,703             -3
+    100          5,787,000            5,787,037            -37
+518,400 (end) 29,999,808,000       30,000,000,000       -192,000   (-0.0192 XLM)
+```
+
+By the time the stream completes, "divide first" has short-changed the
+recipient by 192,000 stroops -- not a rounding artifact, a real, growing
+shortfall. "Multiply first" instead defers the only truncation in the whole
+calculation to the very last step:
+
+```text
+# Multiply first (CORRECT -- what the contract and this indexer do):
+streamed_amount(elapsed) = (total_amount * elapsed) / total_duration
+```
+
+Because that division happens fresh against the *exact* `total_amount *
+elapsed` product every time, its result is always within one stroop of the
+true real-valued answer, no matter how large `elapsed` gets -- there is no
+reusable per-ledger rate to have truncated in the first place, so there is
+nothing for an error to compound from.
+
+<CalloutBox variant="warning" title="Implementation rule">
+  Never compute or cache a "per-ledger rate." Always recompute
+  `(total_amount * elapsed) / total_duration` from the original `total_amount`
+  and `total_duration` on every read, using `checked_mul` before `checked_div`.
+  This is exactly what `streaming_math::streamed_amount` in the API does, and
+  what the Stream contract's `streamed_amount` function must do too.
+</CalloutBox>
+
+`i128` is wide enough that overflow is not a practical concern for real XLM or
+token amounts: `total_amount * elapsed` would need `total_amount` and `elapsed`
+whose product exceeds roughly 1.7 &times; 10<sup>38</sup> to overflow, several
+orders of magnitude beyond any realistic stream. The reference implementation
+still uses `checked_mul`/`checked_div` and returns a typed error rather than
+panicking or silently wrapping, because "never practically reachable" is not
+the same guarantee as "provably unreachable," and this is money-handling code.
+
+## Cliff behavior
+
+A cliff delays *withdrawal*, not *accrual*. Concretely: `streamed_amount` is
+computed exactly as derived above and does not reference `cliff_ledger` at all
+&mdash; it only cares about `start_ledger` and `end_ledger`. The cliff is
+enforced as a separate, additional gate on `withdrawable_amount`:
+
+```text
+withdrawable_amount(current_ledger) =
+    0                                          if current_ledger < cliff_ledger
+    streamed_amount(current_ledger) - withdrawn  otherwise
+```
+
+Crucially, once `current_ledger` reaches `cliff_ledger`, the recipient can
+immediately withdraw *everything accrued since `start_ledger`* &mdash; the
+cliff does not reset the accrual clock to zero and start counting from the
+cliff. A one-year stream with a 90-day cliff makes 90 days of value available
+all at once the moment the cliff passes, exactly matching what a
+continuously-vesting schedule would have accrued by that point.
+
+## What happens on cancel
+
+If a stream is `cancellable` (set at creation and immutable thereafter), the
+sender may cancel it before `end_ledger`. Cancellation settles the stream
+immediately, splitting the vault's locked funds as of that exact ledger:
+
+```text
+streamed_at_cancel = streamed_amount(cancel_ledger)   # using the formula above
+
+recipient_gets  = streamed_at_cancel        # everything vested so far becomes
+                                             # the recipient's, whether or not
+                                             # it was already withdrawn
+sender_refund   = total_amount - streamed_at_cancel
+```
+
+`recipient_gets + sender_refund == total_amount` always &mdash; cancellation
+can never create or destroy funds, only stop future accrual. If the recipient
+had already withdrawn part of `streamed_at_cancel`, only the remainder
+(`streamed_at_cancel - withdrawn`) is newly transferred to them at cancellation
+time; the rest was already in their hands. See
+[Security Model](/docs/concepts/security-model) for who is allowed to call
+`cancel_stream` and how the vault enforces this split.
+
+## Edge cases
+
+| Situation | `streamed_amount` | Rationale |
+|---|---|---|
+| `current_ledger < start_ledger` | `0` | Nothing has begun accruing yet. |
+| `current_ledger < cliff_ledger` (but `>= start_ledger`) | Computed normally by the formula, but `withdrawable_amount` is forced to `0` | Accrual and withdrawability are separate gates -- see [Cliff behavior](#cliff-behavior). |
+| `current_ledger >= end_ledger` | `total_amount` exactly | `elapsed` is clamped to `total_duration` in Step 1, so the result can never exceed `total_amount`, no matter how far past `end_ledger` you read. |
+| `start_ledger == end_ledger` (zero duration) | `total_amount`, the instant `current_ledger >= start_ledger` | Dividing by a zero `total_duration` is undefined, so this is special-cased to "fully vested at start" rather than dividing by zero. The Stream contract's `create_stream` should reject zero-duration streams outright at creation time -- this branch exists purely so the math is total (never panics) even if that validation is ever bypassed. |
+| `total_amount == 0` | `0` at every ledger | Degenerate but harmless; `progress_percent` also reports `0` rather than dividing by zero. |
+
+<CalloutBox variant="success" title="Try it yourself">
+  Every row in this page's tables is asserted by a unit test in
+  `api/src/streaming_math.rs` (`cargo test` from the `api/` directory). If you're
+  implementing this formula in another language for your own tooling, that test
+  file is the fastest way to check your implementation against the same cases.
+</CalloutBox>
