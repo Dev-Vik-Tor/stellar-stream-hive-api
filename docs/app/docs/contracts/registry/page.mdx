@@ -1,0 +1,166 @@
+import CalloutBox from "@/components/CalloutBox";
+
+export const metadata = {
+  title: "Registry Contract",
+  description:
+    "Full function reference for the Registry contract: on-chain indexing and aggregate stats.",
+};
+
+# Registry Contract
+
+The Registry contract maintains an on-chain index of every stream and
+platform-wide aggregate statistics. It exists so that "list all streams" or
+"what's the platform's total volume" can be answered by a single contract
+call, without an off-chain indexer walking every `StreamCreated` event from
+genesis. `stellar-stream-hive-api`'s own `/stats` endpoint mirrors the shape
+of `get_stats` (computed independently from indexed events, as a
+cross-check) -- see [API Reference: Stats](/docs/api/stats).
+
+Source: [`stellar-stream-hive-contract`](https://github.com/Stellar-Hive/stellar-stream-hive-contract)
+(contract module `registry`). Deployment addresses are not yet published --
+see [Getting Started](/docs/getting-started#deployed-contract-addresses).
+
+## Types
+
+### `RegistryStats`
+
+```rust
+pub struct RegistryStats {
+    pub total_streams: u64,
+    pub active_streams: u64,
+    pub total_streamed: i128,
+    pub total_withdrawn: i128,
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `total_streams` | Count of every stream ever created, regardless of current status. |
+| `active_streams` | Count of streams currently in `Pending` or `Active` status. |
+| `total_streamed` | Sum of `streamed_amount` across every stream, evaluated at the ledger `get_stats` is called at. |
+| `total_withdrawn` | Sum of `withdrawn` across every stream. |
+
+### `RegistryError`
+
+```rust
+pub enum RegistryError {
+    AlreadyInitialized = 1,
+    NotInitialized = 2,
+    Unauthorized = 3,   // caller is not the registered Stream contract
+    StreamNotFound = 4,
+}
+```
+
+## Functions
+
+### `initialize`
+
+```rust
+pub fn initialize(env: Env, stream_contract: Address)
+```
+
+One-time setup. Records the only contract address permitted to call
+`register_stream` and `update_stream` -- the same caller-identity pattern used
+by the [Vault](/docs/contracts/vault#the-caller-check), applied here to
+protect the integrity of the index rather than custody of funds.
+
+- **Auth:** none beyond "must be called once, at deployment, by whoever
+  deploys the Registry" -- there is no separate admin key to rotate this
+  later, by design; if the Stream contract is ever redeployed, the Registry
+  must be redeployed alongside it.
+- **Errors:** `AlreadyInitialized`.
+
+### `register_stream`
+
+```rust
+pub fn register_stream(env: Env, stream_id: u64, sender: Address, recipient: Address)
+```
+
+Called once by the Stream contract inside `create_stream`, immediately after a
+new stream is assigned its id. Adds the id to the sender's and recipient's
+lookup indices and increments `total_streams` / `active_streams`.
+
+- **Auth:** caller must be the registered Stream contract (same
+  caller-identity check pattern as the Vault).
+- **Errors:** `Unauthorized`.
+
+### `update_stream`
+
+```rust
+pub fn update_stream(env: Env, stream_id: u64, withdrawn_delta: i128, status: StreamStatus)
+```
+
+Called by the Stream contract after every `withdraw`, `withdraw_max`, and
+`cancel_stream` to keep the Registry's aggregate figures correct without it
+having to recompute accrual for every stream on every call. `withdrawn_delta`
+is added to the Registry's running `total_withdrawn`; if `status` transitions
+away from `Active`/`Pending`, `active_streams` is decremented.
+
+- **Auth:** caller must be the registered Stream contract.
+- **Errors:** `Unauthorized`, `StreamNotFound`.
+
+### `get_all_streams`
+
+```rust
+pub fn get_all_streams(env: Env) -> Vec<u64>
+```
+
+Returns every stream id ever registered, oldest first. Intended for small
+deployments and tooling; for platform-scale queries prefer
+[`GET /streams`](/docs/api/streams) on the indexer API, which paginates and
+avoids loading the full on-chain vector into a transaction's execution budget.
+
+- **Auth:** none (read-only).
+
+### `get_stats`
+
+```rust
+pub fn get_stats(env: Env) -> RegistryStats
+```
+
+Returns the current `RegistryStats`. `total_streamed` reflects live accrual
+computed at call time using the same formula as
+[`streamed_amount`](/docs/contracts/stream#streamed_amount) on the Stream
+contract -- summed across every registered stream.
+
+- **Auth:** none (read-only).
+
+<CalloutBox variant="warning" title="Gas/execution cost of get_stats grows with stream count">
+  Because `get_stats` recomputes live accrual for every stream on every call,
+  its execution cost scales linearly with `total_streams`. This is fine for a
+  young platform; once volume is high, prefer the indexer API's
+  <a href="/docs/api/stats">`GET /stats`</a>, which computes the same figures
+  off-chain from already-decoded events with no per-request contract
+  invocation cost.
+</CalloutBox>
+
+### `get_active_streams`
+
+```rust
+pub fn get_active_streams(env: Env) -> Vec<u64>
+```
+
+Returns the ids of every stream currently in `Pending` or `Active` status.
+
+- **Auth:** none (read-only).
+
+## Events emitted
+
+The Registry contract does not emit its own events. It is a passive index fed
+entirely by the Stream contract's calls to `register_stream` and
+`update_stream`; anything worth indexing off-chain is already emitted by the
+Stream contract itself (see
+[Stream contract: events emitted](/docs/contracts/stream#events-emitted)),
+which is what `stellar-stream-hive-api` actually watches.
+
+## Security notes
+
+- `register_stream` and `update_stream` use the same caller-identity
+  authorization pattern as the Vault's `release`/`refund` (see
+  [Security Model](/docs/concepts/security-model)), but the stakes are
+  different: a compromised Registry can only serve *incorrect statistics or
+  listings*, never move funds. Funds safety depends entirely on the Vault's
+  caller check, not the Registry's.
+- Because of that lower stakes profile, the Registry is a reasonable place to
+  add caching, pagination, or alternate indexing strategies over time without
+  touching the fund-safety-critical parts of the platform.
