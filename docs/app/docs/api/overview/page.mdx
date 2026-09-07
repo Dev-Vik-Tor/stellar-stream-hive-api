@@ -1,0 +1,100 @@
+import CalloutBox from "@/components/CalloutBox";
+
+export const metadata = {
+  title: "API Overview",
+  description:
+    "Base URL, response conventions, and error format for the Stellar Stream Hive indexer API.",
+};
+
+# API Reference: Overview
+
+`stellar-stream-hive-api` is a Rust/Axum service that polls Horizon, decodes
+Soroban events emitted by the [Stream contract](/docs/contracts/stream), and
+serves the resulting index over a small REST API. It holds everything
+in memory (no database) and re-syncs from "now" on every restart -- see the
+[API repository's README](https://github.com/Stellar-Hive/stellar-stream-hive-api/blob/main/api/README.md)
+for why.
+
+Source: [`stellar-stream-hive-api`](https://github.com/Stellar-Hive/stellar-stream-hive-api)
+(`api/` directory).
+
+## Base URL
+
+There is no hosted, publicly-maintained instance yet. Run it yourself:
+
+```bash
+git clone https://github.com/Stellar-Hive/stellar-stream-hive-api.git
+cd stellar-stream-hive-api/api
+cargo run
+```
+
+By default it binds to `http://localhost:8080`. Every example on these API
+reference pages uses `http://localhost:8080` as the base URL -- substitute
+your own deployment's host.
+
+## Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | [`/streams`](/docs/api/streams#get-streams) | All known streams, with live-computed accrual |
+| `GET` | [`/streams/:id`](/docs/api/streams#get-streamsid) | One stream's full detail |
+| `GET` | [`/senders/:address`](/docs/api/streams#get-sendersaddress) | Streams sent by an address |
+| `GET` | [`/recipients/:address`](/docs/api/streams#get-recipientsaddress) | Streams received by an address |
+| `GET` | [`/stats`](/docs/api/stats) | Aggregate totals across every indexed stream |
+| `GET` | `/health` | Liveness check; always returns `200 ok` |
+
+## Response conventions
+
+- Every response is `application/json`.
+- **Amounts are decimal strings, not JSON numbers.** `total_amount`,
+  `withdrawn`, `streamed_amount`, `withdrawable_amount`, `total_streamed`, and
+  `total_withdrawn` are all serialized as strings (e.g. `"30000000000"`), not
+  numbers. This is deliberate: these are `i128` values on-chain, and JSON
+  numbers are IEEE-754 doubles in JavaScript/TypeScript, which only represent
+  integers exactly up to 2<sup>53</sup> -- well below what a large stream's
+  stroop amount can reach. Parse them with `BigInt("30000000000")` in
+  JS/TS, or the equivalent big-integer type in your language. See
+  [Integration Guide](/docs/integration#computing-streamed_amount-client-side)
+  for a worked example.
+- Addresses (`sender`, `recipient`, `token`) are Stellar strkeys (`G...` for
+  accounts, `C...` for contracts), exactly as they appear on-chain -- no
+  reformatting.
+- `streamed_amount`, `withdrawable_amount`, and `progress_percent` on every
+  stream view are computed **live**, against the indexer's most recently
+  observed Horizon ledger, on every request -- they are never stale beyond
+  the indexer's poll interval (10 seconds by default).
+
+## Error format
+
+Non-2xx responses return:
+
+```json
+{
+  "error": "not_found",
+  "message": "stream '42' not found"
+}
+```
+
+| HTTP status | `error` | When |
+|---|---|---|
+| `400` | `bad_request` | A path parameter failed basic validation (e.g. an empty address). |
+| `404` | `not_found` | The requested stream id doesn't exist in the index. |
+| `502` | `upstream_unavailable` | Reserved for future endpoints that proxy live Horizon reads; unused by the current routes, which only ever read already-indexed in-memory state. |
+| `500` | `internal_error` | An unexpected server-side failure (e.g. arithmetic overflow computing aggregate stats). Logged server-side with full detail; the response body never leaks internals. |
+
+<CalloutBox variant="info" title="Why /streams/:id can 404 even for a real stream id">
+  The indexer only knows about streams whose `StreamCreated` event it has
+  actually observed since it started polling (see
+  [why no database](https://github.com/Stellar-Hive/stellar-stream-hive-api/blob/main/api/README.md#why-no-database)).
+  If you query a stream id that existed before this instance's process
+  started, or before `STREAM_CONTRACT_ID` was configured, expect a `404`
+  until the relevant event has been re-observed. This is a known v1
+  limitation, not a bug.
+</CalloutBox>
+
+## CORS
+
+All routes are served with a permissive CORS policy (`Access-Control-Allow-Origin: *`),
+since every endpoint is read-only public data with no notion of a logged-in
+user -- there is nothing a cross-origin request could do here that a same-origin
+one couldn't.
