@@ -82,7 +82,9 @@ Non-2xx responses return:
 | `502` | `upstream_unavailable` | Reserved for future endpoints that proxy live Horizon reads; unused by the current routes, which only ever read already-indexed in-memory state. |
 | `500` | `internal_error` | An unexpected server-side failure (e.g. arithmetic overflow computing aggregate stats). Logged server-side with full detail; the response body never leaks internals. |
 
-<CalloutBox variant="info" title="Why /streams/:id can 404 even for a real stream id">
+### Why `/streams/:id` can 404 even for a real stream id
+
+<CalloutBox variant="info">
   The indexer only knows about streams whose `StreamCreated` event it has
   actually observed since it started polling (see
   [why no database](https://github.com/Stellar-Hive/stellar-stream-hive-api/blob/main/api/README.md#why-no-database)).

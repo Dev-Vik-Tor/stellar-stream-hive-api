@@ -61,7 +61,7 @@ pub fn initialize(env: Env, stream_contract: Address)
 
 One-time setup. Records the only contract address permitted to call
 `register_stream` and `update_stream` -- the same caller-identity pattern used
-by the [Vault](/docs/contracts/vault#the-caller-check), applied here to
+by the [Vault's `release`/`refund` functions](/docs/contracts/vault#release), applied here to
 protect the integrity of the index rather than custody of funds.
 
 - **Auth:** none beyond "must be called once, at deployment, by whoever
