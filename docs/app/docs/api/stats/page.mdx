@@ -1,0 +1,69 @@
+import ApiEndpoint from "@/components/ApiEndpoint";
+import CalloutBox from "@/components/CalloutBox";
+
+export const metadata = {
+  title: "API Reference: Stats",
+  description: "GET /stats -- aggregate totals across every indexed stream.",
+};
+
+# API Reference: Stats
+
+<ApiEndpoint method="GET" path="/stats" description="Aggregate totals across every stream the indexer currently knows about." />
+
+No parameters.
+
+```bash
+curl http://localhost:8080/stats
+```
+
+```json
+{
+  "total_streams": 128,
+  "active_streams": 47,
+  "total_streamed": "184500000000000",
+  "total_withdrawn": "97200000000000"
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `total_streams` | number | Count of every stream the indexer has observed, in any status. |
+| `active_streams` | number | Count currently in `active` status (`pending` streams are not counted -- see note below). |
+| `total_streamed` | string (i128) | Sum of `streamed_amount` across every stream, computed live at the indexer's latest known ledger. |
+| `total_withdrawn` | string (i128) | Sum of `withdrawn` across every stream. |
+
+<CalloutBox variant="info" title="active_streams counts only Active, not Pending">
+  This differs slightly from the Stream contract's own notion of "still
+  accruing," which treats `Pending` and `Active` as equivalent for some
+  internal purposes (see
+  [Stream contract: StreamStatus](/docs/contracts/stream#streamstatus)). The
+  API's `/stats` endpoint reports `active_streams` as strictly
+  `status == "active"`, since "how many streams are *currently paying out*
+  right now" is the more useful platform-health number for a stats endpoint,
+  and a `Pending` stream (not yet at its `start_ledger`) isn't paying out
+  anything yet.
+</CalloutBox>
+
+On an empty index (no streams observed yet), this returns:
+
+```json
+{ "total_streams": 0, "active_streams": 0, "total_streamed": "0", "total_withdrawn": "0" }
+```
+
+**Errors:** `500 internal_error` if summing `streamed_amount` or `withdrawn`
+across all streams would overflow `i128` -- effectively unreachable at any
+realistic scale, but the aggregation uses `checked_add` and returns a typed
+error rather than silently wrapping or panicking, consistent with every other
+amount computation in this API (see
+[Streaming Math: overflow](/docs/concepts/streaming-math#why-multiply-before-divide)).
+
+## Comparison to the Registry contract's `get_stats`
+
+The [Registry contract](/docs/contracts/registry#get_stats) exposes an
+on-chain `get_stats` function returning the same four fields. The two are
+computed independently -- the Registry from its own on-chain bookkeeping, this
+API from indexed `StreamCreated`/`Withdrawn`/`Cancelled` events -- and should
+always agree, modulo the indexer's poll interval (10 seconds by default). If
+they ever diverge for more than a poll cycle or two, that's a bug worth
+reporting: either the indexer missed/misdecoded an event, or the Registry's
+bookkeeping and the Stream contract's actual behavior have drifted apart.
