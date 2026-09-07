@@ -1,0 +1,172 @@
+import CalloutBox from "@/components/CalloutBox";
+
+export const metadata = {
+  title: "Vault Contract",
+  description:
+    "Full function reference for the Vault contract: the sole custodian of streamed funds.",
+};
+
+# Vault Contract
+
+The Vault contract is the only place tokens are ever held on this platform. It
+knows nothing about schedules, cliffs, or recipients beyond the arguments
+passed to it -- its entire job is to hold deposits and release or refund them
+**only when instructed by the Stream contract**. Read
+[Security Model](/docs/concepts/security-model) first if you haven't already;
+this page assumes you understand why that restriction exists.
+
+Source: [`stellar-stream-hive-contract`](https://github.com/Stellar-Hive/stellar-stream-hive-contract)
+(contract module `vault`). Deployment addresses are not yet published --
+see [Getting Started](/docs/getting-started#deployed-contract-addresses).
+
+## Types
+
+### `VaultError`
+
+```rust
+pub enum VaultError {
+    AlreadyInitialized = 1,
+    NotInitialized = 2,
+    Unauthorized = 3,          // caller is not the registered Stream contract
+    InsufficientBalance = 4,   // release/refund amount exceeds what's locked for this stream
+    InvalidAmount = 5,          // amount <= 0
+}
+```
+
+## Functions
+
+### `initialize`
+
+```rust
+pub fn initialize(env: Env, admin: Address)
+```
+
+One-time setup. Stores `admin`, the only address permitted to later call
+`set_stream_contract`.
+
+- **Auth:** `admin.require_auth()`.
+- **Errors:** `AlreadyInitialized`.
+
+### `set_stream_contract`
+
+```rust
+pub fn set_stream_contract(env: Env, stream_contract: Address)
+```
+
+Records the single contract address permitted to call `release` and
+`refund`. This is the linchpin of the entire security model -- see
+[Security Model: the caller check](/docs/concepts/security-model#the-caller-check-the-entire-security-boundary-in-one-sentence).
+
+- **Auth:** `admin.require_auth()` (the address stored by `initialize`).
+- **Errors:** `NotInitialized`, `Unauthorized` if called by anyone but the admin.
+
+<CalloutBox variant="warning" title="Treat this as a one-time deployment step">
+  In a production deployment, call `set_stream_contract` exactly once, as part
+  of initial setup, before any `deposit` happens. Changing it later would let
+  a new "Stream contract" (correctly authorized per this check) start issuing
+  `release`/`refund` calls against funds that were deposited under a previous
+  Stream contract's business rules -- the Vault has no way to know those rules
+  changed.
+</CalloutBox>
+
+### `deposit`
+
+```rust
+pub fn deposit(env: Env, from: Address, stream_id: u64, token: Address, amount: i128)
+```
+
+Pulls `amount` of `token` from `from` (via the token's standard `transfer`)
+into the Vault, and records `amount` as locked against `stream_id`. Called by
+the Stream contract during `create_stream`, on the sender's behalf -- `from`
+is the stream's sender, and it is `from` (not the Stream contract) whose
+authorization is actually required, since it's their tokens being moved.
+
+- **Auth:** `from.require_auth()`.
+- **Errors:** `InvalidAmount` if `amount <= 0`; propagates the token
+  contract's own errors if `from` has insufficient balance or hasn't
+  authorized the transfer.
+
+### `release`
+
+```rust
+pub fn release(env: Env, stream_id: u64, to: Address, amount: i128)
+```
+
+Transfers `amount` of the stream's locked token to `to`, decrementing the
+amount locked against `stream_id`. This is one of exactly two functions in the
+entire platform that can move funds out of custody.
+
+- **Auth:** **caller must be the address stored by `set_stream_contract`** --
+  enforced via Soroban's invoking-contract identity, not a parameter. See
+  [Security Model](/docs/concepts/security-model#the-caller-check-the-entire-security-boundary-in-one-sentence).
+- **Errors:** `Unauthorized` if called by anything other than the registered
+  Stream contract; `InsufficientBalance` if `amount` exceeds what's locked for
+  `stream_id`; `InvalidAmount` if `amount <= 0`.
+
+### `refund`
+
+```rust
+pub fn refund(env: Env, stream_id: u64, to: Address, amount: i128)
+```
+
+Identical in every respect to `release` except semantically -- used to return
+unstreamed funds to a stream's sender on cancellation, rather than paying out
+accrued funds to the recipient. Uses the same authorization check as
+`release`.
+
+- **Auth:** same as `release`.
+- **Errors:** same as `release`.
+
+### `balance_of_stream`
+
+```rust
+pub fn balance_of_stream(env: Env, stream_id: u64) -> i128
+```
+
+Returns how much is currently locked in the Vault against `stream_id` (i.e.
+`total_amount - withdrawn - already_refunded`, from the Vault's own
+bookkeeping -- not recomputed from the Stream contract's schedule).
+
+- **Auth:** none (read-only).
+
+### `total_locked`
+
+```rust
+pub fn total_locked(env: Env, token: Address) -> i128
+```
+
+Returns the sum of every stream's locked balance for a given `token`, i.e. the
+Vault's total custodied amount of that asset. Useful as a solvency
+cross-check: this should always equal that token's balance held by the Vault
+contract's own account.
+
+- **Auth:** none (read-only).
+
+## Events emitted
+
+The Vault contract does not emit its own lifecycle events for indexing
+purposes -- `stellar-stream-hive-api` indexes stream lifecycle exclusively
+through the Stream contract's `StreamCreated`/`Withdrawn`/`Cancelled` events
+(see [Stream contract: events emitted](/docs/contracts/stream#events-emitted)),
+since those already carry every figure ( amounts, ids) the indexer needs.
+Token transfers `release`/`refund` trigger do still surface as standard SEP-41
+`transfer` events on the underlying token contract, visible to any generic
+Horizon/Soroban RPC event watcher.
+
+## Security notes
+
+- The caller-identity check on `release`/`refund` is the single most
+  important line of code in this entire platform. See
+  [Security Model](/docs/concepts/security-model) for the full threat
+  analysis, including why a passed-in "claimed caller" parameter would be
+  worthless and why this must use Soroban's actual invoking-contract identity.
+- `deposit` requires `from.require_auth()`, not the Stream contract's -- this
+  is intentional. It is the token owner's authorization that matters for
+  *moving their tokens into* the vault; only *moving tokens back out* needs
+  the stronger "only the Stream contract" guarantee, because that's the step
+  that must respect the streaming schedule.
+- The Vault holds no schedule state and enforces no accrual math. If you are
+  auditing fund-safety, this contract plus the caller check is the entire
+  custody story; the Stream contract's correctness only affects *when* and
+  *how much* gets released, never *whether an unauthorized party can trigger
+  a release at all*.
