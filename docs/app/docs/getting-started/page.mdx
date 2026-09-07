@@ -1,0 +1,165 @@
+import CalloutBox from "@/components/CalloutBox";
+
+export const metadata = {
+  title: "Getting Started",
+  description:
+    "What payment streaming is, prerequisites, and how to create your first testnet stream.",
+};
+
+# Getting Started
+
+## What is payment streaming?
+
+A normal payment is a single, instantaneous transfer: sender signs, recipient
+receives the full amount immediately. **Payment streaming** replaces that with
+a continuous transfer that vests linearly over time: the sender locks
+`total_amount` once, and the recipient's claim on it grows every ledger
+between a `start_ledger` and an `end_ledger`, rather than all at once.
+
+This unlocks patterns that a single lump-sum transfer can't express cleanly:
+
+- **Payroll** -- an employee's salary accrues continuously through a pay
+  period instead of landing as one lump sum, and can be withdrawn any time.
+- **Vesting** -- a token grant that unlocks gradually, often with a **cliff**
+  (a minimum waiting period before anything is withdrawable at all).
+- **Subscriptions** -- a payer streams funds to a service continuously and
+  can cancel at any time, only ever paying for time actually elapsed.
+- **Grants** -- milestone-free continuous funding that a sender can halt
+  (refunding the unstreamed remainder) if a recipient stops delivering.
+
+Every one of these is the same underlying primitive: lock funds once, vest
+them linearly, let either party interact with the live balance. The exact math
+behind "vest them linearly" is the single most important thing to understand
+about this platform -- see
+[Concepts: Streaming Math](/docs/concepts/streaming-math).
+
+## Prerequisites
+
+To create or interact with a stream you'll need:
+
+- **A Stellar testnet (or mainnet) account.** The
+  [Stellar Laboratory](https://laboratory.stellar.org/#account-creator?network=test)
+  or `stellar keys generate` (Stellar CLI) can create one and fund it via
+  [Friendbot](https://developers.stellar.org/docs/learn/fundamentals/networks#friendbot)
+  on testnet.
+- **[Freighter](https://www.freighter.app/)** (or another Soroban-compatible
+  wallet), if you're interacting through the web app -- see
+  [Web App Guide](/docs/web-app).
+- **The Stellar CLI** (`stellar` -- formerly `soroban-cli`), if you're
+  interacting with contracts directly -- see
+  [Integration Guide](/docs/integration#direct-contract-interaction).
+- **Node.js 18+**, only if you're running the
+  [web app](https://github.com/Stellar-Hive/stellar-stream-hive-frontend) or
+  this docs site locally.
+- **Rust + the `wasm32-unknown-unknown` target**, only if you're building the
+  [contracts](https://github.com/Stellar-Hive/stellar-stream-hive-contract)
+  from source.
+
+You do **not** need any of the above just to query existing streams -- the
+[indexer API](/docs/api/overview) is a plain public REST endpoint.
+
+## Quickstart: create your first testnet stream
+
+<CalloutBox variant="info">
+  This walkthrough uses the Stellar CLI against testnet. It assumes the Stream
+  contract is already deployed and you have its `C...` address -- see
+  [Deployed contract addresses](#deployed-contract-addresses) below for where
+  that will be published once available.
+</CalloutBox>
+
+1. **Create and fund two testnet identities** -- one to act as sender, one as
+   recipient:
+
+```bash
+stellar keys generate sender --network testnet --fund
+stellar keys generate recipient --network testnet --fund
+```
+
+2. **Create a stream** paying `recipient` 100 XLM (1,000,000,000 stroops) over
+   roughly one hour (~720 ledgers at 5s/ledger), starting now with no cliff:
+
+```bash
+CURRENT_LEDGER=$(stellar ledger latest --network testnet | jq -r .sequence)
+
+stellar contract invoke \
+  --id <STREAM_CONTRACT_ID> \
+  --source sender \
+  --network testnet \
+  -- create_stream \
+  --sender "$(stellar keys address sender)" \
+  --recipient "$(stellar keys address recipient)" \
+  --token <XLM_SAC_CONTRACT_ID> \
+  --total_amount 1000000000 \
+  --start_ledger "$CURRENT_LEDGER" \
+  --end_ledger $((CURRENT_LEDGER + 720)) \
+  --cliff_ledger "$CURRENT_LEDGER" \
+  --cancellable true
+```
+
+3. **Watch it accrue** -- either poll the contract directly:
+
+```bash
+stellar contract invoke \
+  --id <STREAM_CONTRACT_ID> \
+  --network testnet \
+  -- withdrawable_amount --stream_id 0
+```
+
+   or query the indexer API once it has picked up the `StreamCreated` event
+   (polls every 10 seconds -- see [API Reference](/docs/api/overview)):
+
+```bash
+curl https://<your-api-host>/streams/0
+```
+
+4. **Withdraw** whatever has accrued, as the recipient:
+
+```bash
+stellar contract invoke \
+  --id <STREAM_CONTRACT_ID> \
+  --source recipient \
+  --network testnet \
+  -- withdraw_max --stream_id 0
+```
+
+That's the entire lifecycle. For the fund-safety reasoning behind why
+`withdraw` must be signed by `recipient` specifically, and why the contract
+that holds the money is a separate contract from the one you just called, see
+[Security Model](/docs/concepts/security-model).
+
+## Network guide
+
+| Network | Horizon | Soroban RPC | Notes |
+|---|---|---|---|
+| Testnet | `https://horizon-testnet.stellar.org` | `https://soroban-testnet.stellar.org` | Default for this API and all examples in these docs. Reset periodically by SDF -- don't rely on long-lived testnet state. |
+| Futurenet | `https://horizon-futurenet.stellar.org` | `https://rpc-futurenet.stellar.org` | Bleeding-edge protocol features; not used by this platform's default configuration. |
+| Mainnet | `https://horizon.stellar.org` | `https://mainnet.sorobanrpc.com` (third-party; SDF does not run a public mainnet RPC) | Real funds. Do not point `HORIZON_URL` here until the contracts have been audited and formally deployed. |
+
+The API's indexer defaults to testnet Horizon (`HORIZON_URL` environment
+variable) -- see [`api/README.md`](https://github.com/Stellar-Hive/stellar-stream-hive-api/blob/main/api/README.md).
+
+## Deployed contract addresses
+
+<CalloutBox variant="warning" title="Not yet deployed">
+  The Stream, Vault, and Registry contracts described in these docs are
+  specified and documented here, but **have not been deployed to any network
+  yet** -- development on
+  [`stellar-stream-hive-contract`](https://github.com/Stellar-Hive/stellar-stream-hive-contract)
+  is ongoing. Real, deployed contract addresses will be published in that
+  repository's `DEPLOYMENTS.md` once available, and this section will be
+  updated to link there directly. Until then, do not treat any address shown
+  elsewhere in these docs or in example code as real -- placeholders like
+  `STREAM_CONTRACT_ID=CONTRACT_ID_NOT_YET_DEPLOYED_SET_STREAM_CONTRACT_ID_ENV_VAR`
+  (the API's actual default, see
+  [`api/src/config.rs`](https://github.com/Stellar-Hive/stellar-stream-hive-api/blob/main/api/src/config.rs))
+  are deliberately obvious placeholders, not addresses.
+</CalloutBox>
+
+Once a testnet deployment exists, this section will list:
+
+- Stream contract address
+- Vault contract address
+- Registry contract address
+- The deployment's Stellar Asset Contract (SAC) id for XLM, for convenience
+
+...for both testnet and (later) mainnet.
