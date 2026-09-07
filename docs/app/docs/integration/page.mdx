@@ -1,0 +1,195 @@
+import CalloutBox from "@/components/CalloutBox";
+
+export const metadata = {
+  title: "Integration Guide",
+  description:
+    "Querying the indexer API from TypeScript, computing streamed_amount client-side, and interacting with the contracts directly.",
+};
+
+# Integration Guide
+
+This page is for anyone building against Stellar Stream Hive programmatically
+&mdash; a bot, a dashboard, a payroll tool, or your own frontend. There are two
+ways in: the [indexer API](/docs/api/overview) (fast, simple, eventually
+consistent within one poll interval) or the contracts directly (authoritative,
+requires a Soroban RPC endpoint and more setup). Most integrations should
+start with the API and only reach for direct contract calls when they need to
+*write* (create/withdraw/cancel), since the API is read-only by design.
+
+## Querying the API
+
+A minimal typed client for the four read endpoints:
+
+```typescript
+interface StreamView {
+  id: string;
+  sender: string;
+  recipient: string;
+  token: string;
+  total_amount: string;
+  withdrawn: string;
+  start_ledger: number;
+  end_ledger: number;
+  cliff_ledger: number;
+  cancellable: boolean;
+  status: "pending" | "active" | "completed" | "cancelled";
+  created_at: number;
+  streamed_amount: string;
+  withdrawable_amount: string;
+  progress_percent: number;
+}
+
+interface Stats {
+  total_streams: number;
+  active_streams: number;
+  total_streamed: string;
+  total_withdrawn: string;
+}
+
+class StreamHiveClient {
+  constructor(private baseUrl: string) {}
+
+  private async get<T>(path: string): Promise<T> {
+    const res = await fetch(`${this.baseUrl}${path}`);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(`${res.status} ${body.error ?? "unknown_error"}: ${body.message ?? res.statusText}`);
+    }
+    return res.json() as Promise<T>;
+  }
+
+  listStreams(): Promise<StreamView[]> {
+    return this.get("/streams");
+  }
+
+  getStream(id: string): Promise<StreamView> {
+    return this.get(`/streams/${encodeURIComponent(id)}`);
+  }
+
+  getStreamsBySender(address: string): Promise<StreamView[]> {
+    return this.get(`/senders/${encodeURIComponent(address)}`);
+  }
+
+  getStreamsByRecipient(address: string): Promise<StreamView[]> {
+    return this.get(`/recipients/${encodeURIComponent(address)}`);
+  }
+
+  getStats(): Promise<Stats> {
+    return this.get("/stats");
+  }
+}
+
+const client = new StreamHiveClient("http://localhost:8080");
+const myStreams = await client.getStreamsByRecipient("GABC...XYZ");
+```
+
+<CalloutBox variant="warning" title="Don't do arithmetic on these fields as numbers">
+  Every amount field above is typed `string`, not `number`, on purpose --
+  see [API Overview: response conventions](/docs/api/overview#response-conventions).
+  `Number("30000000000")` loses precision above 2<sup>53</sup>; always parse
+  with `BigInt` before doing any arithmetic, as in the next section.
+</CalloutBox>
+
+## Computing `streamed_amount` client-side
+
+You don't have to trust the API's (or the contract's) computed
+`streamed_amount` blindly -- it's a pure function of five values that are all
+public: `total_amount`, `start_ledger`, `end_ledger`, `cliff_ledger`, and the
+current ledger. Here is the exact formula from
+[Streaming Math](/docs/concepts/streaming-math), in TypeScript using `BigInt`
+to match the contract's `i128` semantics precisely:
+
+```typescript
+/**
+ * Mirrors api/src/streaming_math.rs::streamed_amount exactly, including the
+ * multiply-before-divide ordering and every edge case. All amount/ledger
+ * inputs are BigInt to avoid precision loss -- see the "why multiply before
+ * divide" section of the streaming-math docs for why order matters here.
+ */
+function streamedAmount(
+  totalAmount: bigint,
+  startLedger: bigint,
+  endLedger: bigint,
+  cliffLedger: bigint,
+  currentLedger: bigint,
+): bigint {
+  if (currentLedger < cliffLedger) return 0n;
+  if (currentLedger < startLedger) return 0n;
+  if (endLedger <= startLedger) return totalAmount; // zero-duration stream
+
+  const cappedLedger = currentLedger < endLedger ? currentLedger : endLedger;
+  const elapsed = cappedLedger - startLedger;
+  const totalDuration = endLedger - startLedger;
+
+  return (totalAmount * elapsed) / totalDuration; // multiply BEFORE divide
+}
+
+function withdrawableAmount(streamed: bigint, withdrawn: bigint): bigint {
+  const diff = streamed - withdrawn;
+  return diff > 0n ? diff : 0n;
+}
+
+// Example: the 30-day, 3,000 XLM stream from the streaming-math docs, read
+// at the 15-day mark (half elapsed):
+const streamed = streamedAmount(
+  30_000_000_000n, // total_amount
+  1_000_000n,      // start_ledger
+  1_518_400n,      // end_ledger
+  1_000_000n,      // cliff_ledger (none)
+  1_259_200n,      // current_ledger (15 days in)
+);
+console.log(streamed); // 15000000000n
+```
+
+You need the current ledger sequence to evaluate this yourself; fetch it from
+Horizon directly (`GET {horizon}/` returns `history_latest_ledger`) or from
+any Soroban RPC's `getLatestLedger` method -- the indexer API doesn't expose
+its internally-tracked ledger as a standalone field today, only baked into the
+`streamed_amount`/`withdrawable_amount` it returns per-stream.
+
+## Direct contract interaction
+
+For write operations (`create_stream`, `withdraw`, `cancel_stream`), or if you
+want to read contract state without depending on this indexer at all, call the
+contracts directly via Soroban RPC. Using the
+[`@stellar/stellar-sdk`](https://www.npmjs.com/package/@stellar/stellar-sdk)
+JavaScript SDK:
+
+```typescript
+import { Contract, rpc, TransactionBuilder, Networks, BASE_FEE } from "@stellar/stellar-sdk";
+
+const server = new rpc.Server("https://soroban-testnet.stellar.org");
+const streamContract = new Contract("<STREAM_CONTRACT_ID>");
+
+// Read-only call: no signing, no fee, resolves immediately via simulation.
+async function getStreamedAmount(streamId: bigint): Promise<bigint> {
+  const account = await server.getAccount("<ANY_FUNDED_ACCOUNT_ADDRESS>");
+  const tx = new TransactionBuilder(account, { fee: BASE_FEE, networkPassphrase: Networks.TESTNET })
+    .addOperation(streamContract.call("streamed_amount", /* stream_id: */ nativeToScVal(streamId, { type: "u64" })))
+    .setTimeout(30)
+    .build();
+
+  const sim = await server.simulateTransaction(tx);
+  if (rpc.Api.isSimulationError(sim)) throw new Error(sim.error);
+  return scValToNative(sim.result!.retval) as bigint;
+}
+```
+
+For a state-changing call like `withdraw_max`, the same transaction must
+additionally be signed by the recipient's key (via Freighter in a browser
+context, or a `Keypair` server-side) and submitted with
+`server.sendTransaction`, then polled with `server.getTransaction` until it
+leaves the `PENDING` status -- see the
+[Soroban RPC documentation](https://developers.stellar.org/docs/data/rpc)
+for the full submit/poll lifecycle, which is generic to any Soroban contract
+call and not specific to this platform.
+
+<CalloutBox variant="info" title="When to prefer direct contract calls over the API">
+  Reach for direct RPC calls instead of the indexer API when you need: (1) a
+  write operation, (2) absolute real-time reads with zero dependency on this
+  API's 10-second poll interval, or (3) to verify the indexer itself is
+  behaving correctly (compare its `/streams/:id` output against a direct
+  `get_stream` + `streamed_amount` call). For everything else -- listing,
+  filtering by sender/recipient, aggregate stats -- the API is simpler and
+  doesn't require you to run or trust a Soroban RPC endpoint yourself.
+</CalloutBox>
