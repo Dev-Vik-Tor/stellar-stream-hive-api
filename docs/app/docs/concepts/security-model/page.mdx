@@ -1,0 +1,152 @@
+import CalloutBox from "@/components/CalloutBox";
+
+export const metadata = {
+  title: "Security Model",
+  description:
+    "Why the Vault contract is separate from the Stream contract, the caller-identity check that makes that separation meaningful, and the auth requirements for every function.",
+};
+
+# Security Model
+
+Stellar Stream Hive splits into three contracts on purpose:
+[Stream](/docs/contracts/stream), [Vault](/docs/contracts/vault), and
+[Registry](/docs/contracts/registry). This page explains the one design
+decision that matters most for the safety of user funds: **the Vault holds
+money, but only the Stream contract is allowed to tell it to move.**
+
+## Why the vault is a separate contract
+
+It would be simpler to have one contract that both tracks stream schedules
+*and* holds the tokens. Stellar Stream Hive deliberately doesn't do that,
+for three reasons:
+
+1. **Blast radius.** The Stream contract has the most business logic, and
+   therefore the largest surface for bugs: schedule validation, cliff
+   handling, cancellation math, status transitions. If a bug is ever found
+   there, a separate, much smaller Vault contract means an upgrade or a
+   migration to a fixed Stream contract does not require the funds themselves
+   to move through a risky path -- the Vault's job is narrow enough to get
+   right once and not touch again.
+2. **One auditable custody boundary.** Every token transfer in the entire
+   platform happens inside the Vault, in exactly two functions
+   (`release` and `refund`). An auditor -- or a curious user reading the
+   contract source themselves -- does not need to trace business logic to
+   find every place funds could move; there are exactly two functions to
+   scrutinize, and both are guarded by the same check (below).
+3. **Composability.** A minimal, standalone vault that "holds tokens, pays
+   out on instruction from an authorized controller" is a pattern this
+   platform can reuse (e.g. a future Registry-driven multi-stream vault)
+   without re-deriving custody logic each time.
+
+## The caller check: the entire security boundary in one sentence
+
+The Vault contract does not know what a "stream" is, what a schedule is, or
+what `streamed_amount` means. It knows exactly one thing: **which contract
+address is allowed to call `release` and `refund`.** That address is set once,
+at deployment, via `set_stream_contract`, and every call to `release` or
+`refund` checks the immediate caller against it:
+
+```text
+fn release(env: Env, stream_id: u64, to: Address, amount: i128) {
+    let caller = env.current_contract_address(); // conceptually: the invoker
+    require(caller == stored_stream_contract_address, "unauthorized caller");
+    // ... transfer `amount` of the stream's token to `to` ...
+}
+```
+
+<CalloutBox variant="danger" title="This check is the entire security model">
+  Everything else in this platform -- schedule math, cliffs, cancellation
+  rules, who can call the Stream contract's own functions -- exists to decide
+  *when* the Stream contract should call `release`/`refund` and for *how
+  much*. None of it matters if the Vault does not enforce who is allowed to
+  call it in the first place. If this one check were ever missing or
+  misconfigured, every fund-safety property described elsewhere in these docs
+  would be void, because anyone could bypass the Stream contract's logic
+  entirely and drain the Vault directly.
+</CalloutBox>
+
+In Soroban terms, this is enforced with the invoking contract's address (the
+authenticated caller identity Soroban provides to a called contract), *not*
+with a signature check or a passed-in parameter the caller could simply lie
+about. A parameter like `release(claimed_caller: Address, ...)` would be
+worthless as a security check -- nothing stops any address from calling
+`release` and passing whatever `claimed_caller` value it wants. The check must
+bind to Soroban's own notion of "who is invoking me right now," which cannot
+be forged by the caller.
+
+## What an attacker would try
+
+**Attack: call `vault.release(stream_id, attacker_address, total_amount)`
+directly, skipping the Stream contract entirely.**
+
+This is the obvious attack once you know the Vault holds the funds: why go
+through the Stream contract's withdrawal math at all if you can just ask the
+Vault to pay out? It fails at the first line of `release` -- the caller is the
+attacker's own address (or whatever contract they invoked from), not the
+Stream contract's address, so the equality check fails and the call aborts
+before any transfer happens. This is true no matter what arguments the
+attacker passes; there is no `stream_id` or `amount` that satisfies the
+caller check, because the check never inspects those arguments in the first
+place.
+
+**Attack: deploy a malicious contract that impersonates the Stream contract's
+interface, and get the Vault to accept calls from it.**
+
+This fails because `stored_stream_contract_address` is a single, specific
+contract address set via `set_stream_contract` -- not "any contract that looks
+like a stream contract." A malicious contract has a different contract
+address by construction (contract addresses are derived from the deployer and
+a salt/WASM hash), so it can never equal the address on file, regardless of
+what code it runs internally.
+
+**Attack: call `set_stream_contract` to point the Vault at an attacker-controlled
+contract.**
+
+This is why `set_stream_contract` itself needs its own auth check -- see the
+function-by-function table below. It must only be callable by whoever is
+authorized to administer the Vault (its `initialize`-time admin), and in
+practice should only ever be called once, at deployment, before any funds are
+deposited. A production deployment should treat this function as a one-time
+setup step and consider removing or heavily restricting the ability to call it
+again.
+
+**Attack: front-run or race a legitimate `withdraw` call to withdraw twice.**
+
+This is a Stream-contract-side concern rather than a Vault-side one: the
+Stream contract must update `withdrawn` (and persist it) *before* or
+atomically with calling `vault.release`, within the same transaction, using
+Soroban's ledger-level atomicity -- there is no window where two concurrent
+`withdraw` calls could both read a stale `withdrawn` value and both succeed,
+because Soroban transactions execute host-function calls sequentially within
+one transaction and contract state changes are only visible/committed as part
+of that same transaction's atomic execution.
+
+## Auth requirements per function
+
+| Contract | Function | Who may call it | Enforced by |
+|---|---|---|---|
+| Stream | `initialize` | Deployer, once | One-time initialization guard (fails if already initialized) |
+| Stream | `create_stream` | The intended sender (must authorize the deposit) | `sender.require_auth()` |
+| Stream | `withdraw` / `withdraw_max` | The stream's `recipient` | `recipient.require_auth()` |
+| Stream | `cancel_stream` | The stream's `sender`, and only if `cancellable` | `sender.require_auth()` + `cancellable` check |
+| Stream | `streamed_amount` / `withdrawable_amount` / `get_stream` / `get_status` / `get_streams_by_sender` / `get_streams_by_recipient` | Anyone (read-only) | No auth required -- these never move funds or change state |
+| Vault | `initialize` | Deployer, once | One-time initialization guard |
+| Vault | `set_stream_contract` | Vault admin | `admin.require_auth()` |
+| Vault | `deposit` | Whoever is funding a stream (typically invoked by the Stream contract on the sender's behalf during `create_stream`) | `require_auth()` on the depositing party |
+| Vault | `release` | **The Stream contract only** | Caller-identity check against `stored_stream_contract_address` -- see above |
+| Vault | `refund` | **The Stream contract only** | Same caller-identity check as `release` |
+| Vault | `balance_of_stream` / `total_locked` | Anyone (read-only) | No auth required |
+| Registry | `initialize` | Deployer, once | One-time initialization guard |
+| Registry | `register_stream` / `update_stream` | The Stream contract only (Registry is a passive index fed by Stream) | Caller-identity check, same pattern as the Vault |
+| Registry | `get_all_streams` / `get_stats` / `get_active_streams` | Anyone (read-only) | No auth required |
+
+<CalloutBox variant="info" title="Read-only functions are not a security concern">
+  Every read-only function above is safe to expose with no authorization
+  because Soroban view calls cannot mutate ledger state or move funds --
+  worst case, an attacker learns public information that's already visible on
+  chain via Horizon anyway. The `stellar-stream-hive-api` indexer relies on
+  exactly this fact: it only ever reads (via decoded events, never by calling
+  Stream contract functions with elevated privilege), so it can never be a
+  vector for unauthorized fund movement even if the indexer process itself
+  were fully compromised.
+</CalloutBox>
