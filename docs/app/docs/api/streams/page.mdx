@@ -1,0 +1,155 @@
+import ApiEndpoint from "@/components/ApiEndpoint";
+import CalloutBox from "@/components/CalloutBox";
+
+export const metadata = {
+  title: "API Reference: Streams",
+  description:
+    "GET /streams, GET /streams/:id, GET /senders/:address, and GET /recipients/:address.",
+};
+
+# API Reference: Streams
+
+All four endpoints on this page return the same shape: a `Stream` (the
+on-chain fields, unchanged) flattened together with three fields the API
+computes live -- `streamed_amount`, `withdrawable_amount`, and
+`progress_percent`. See [Streaming Math](/docs/concepts/streaming-math) for
+exactly how those three are derived.
+
+## Stream view shape
+
+Every stream object returned by these endpoints has this shape:
+
+```json
+{
+  "id": "0",
+  "sender": "GABC...XYZ",
+  "recipient": "GDEF...UVW",
+  "token": "CABC...123",
+  "total_amount": "30000000000",
+  "withdrawn": "5000000000",
+  "start_ledger": 1000000,
+  "end_ledger": 1518400,
+  "cliff_ledger": 1000000,
+  "cancellable": true,
+  "status": "active",
+  "created_at": 1735689600,
+  "streamed_amount": "15000000000",
+  "withdrawable_amount": "10000000000",
+  "progress_percent": 50
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string | Stream id, stringified. |
+| `sender` / `recipient` / `token` | string | Stellar strkeys. |
+| `total_amount` / `withdrawn` | string (i128) | On-chain fields, unchanged. |
+| `start_ledger` / `end_ledger` / `cliff_ledger` | number | Plain JSON numbers -- these fit safely in a JS `number` (max realistic ledger sequence is nowhere near 2<sup>53</sup>). |
+| `cancellable` | boolean | |
+| `status` | string | One of `"pending"`, `"active"`, `"completed"`, `"cancelled"`. |
+| `created_at` | number | Unix timestamp (seconds). |
+| `streamed_amount` / `withdrawable_amount` | string (i128) | Computed live -- see [Streaming Math](/docs/concepts/streaming-math). |
+| `progress_percent` | number | Integer 0-100, `streamed_amount / total_amount * 100`, rounded down. |
+
+## `GET /streams`
+
+<ApiEndpoint method="GET" path="/streams" description="Every stream the indexer currently knows about." />
+
+No parameters. Returns a JSON array of [stream view](#stream-view-shape)
+objects, in no guaranteed order.
+
+```bash
+curl http://localhost:8080/streams
+```
+
+```json
+[
+  { "id": "0", "sender": "GABC...", "...": "..." },
+  { "id": "1", "sender": "GDEF...", "...": "..." }
+]
+```
+
+An empty array (`[]`) is a valid response -- it means either no streams have
+been created yet, or `STREAM_CONTRACT_ID` isn't configured yet (see
+[Getting Started: deployed contract addresses](/docs/getting-started#deployed-contract-addresses)).
+
+**Errors:** `500 internal_error` only if computing a stream's live view fails
+unexpectedly (e.g. arithmetic overflow) -- not expected in normal operation.
+
+## `GET /streams/:id`
+
+<ApiEndpoint method="GET" path="/streams/:id" description="Full detail for one stream." />
+
+| Parameter | Location | Type | Description |
+|---|---|---|---|
+| `id` | path | string | The stream id, as returned by `create_stream` on-chain. |
+
+```bash
+curl http://localhost:8080/streams/0
+```
+
+```json
+{
+  "id": "0",
+  "sender": "GABC...XYZ",
+  "recipient": "GDEF...UVW",
+  "token": "CABC...123",
+  "total_amount": "30000000000",
+  "withdrawn": "5000000000",
+  "start_ledger": 1000000,
+  "end_ledger": 1518400,
+  "cliff_ledger": 1000000,
+  "cancellable": true,
+  "status": "active",
+  "created_at": 1735689600,
+  "streamed_amount": "15000000000",
+  "withdrawable_amount": "10000000000",
+  "progress_percent": 50
+}
+```
+
+**Errors:**
+
+- `404 not_found` -- no stream with this id is known to the indexer (see the
+  callout in [API Overview](/docs/api/overview#why-streamsid-can-404-even-for-a-real-stream-id)
+  about why this can happen even for a real, on-chain stream id).
+- `500 internal_error` -- unexpected failure computing the live view.
+
+## `GET /senders/:address`
+
+<ApiEndpoint method="GET" path="/senders/:address" description="Every stream sent by a given address." />
+
+| Parameter | Location | Type | Description |
+|---|---|---|---|
+| `address` | path | string | A Stellar `G...` account strkey. |
+
+```bash
+curl http://localhost:8080/senders/GABC...XYZ
+```
+
+Returns a JSON array of [stream view](#stream-view-shape) objects where
+`sender` matches `address` -- shape identical to `GET /streams`, just
+pre-filtered. An address that has never sent a stream returns `[]`, not a
+`404` -- there's nothing invalid about an address with zero streams.
+
+**Errors:** `400 bad_request` if `address` is empty (e.g. a malformed path
+like `/senders/`).
+
+## `GET /recipients/:address`
+
+<ApiEndpoint method="GET" path="/recipients/:address" description="Every stream received by a given address." />
+
+Identical to `GET /senders/:address` in every respect except that it filters
+on `recipient` instead of `sender`.
+
+```bash
+curl http://localhost:8080/recipients/GDEF...UVW
+```
+
+**Errors:** `400 bad_request` if `address` is empty.
+
+<CalloutBox variant="success" title="TypeScript example">
+  See [Integration Guide](/docs/integration#querying-the-api) for a typed
+  `fetch` wrapper around all four of these endpoints, including safe
+  `BigInt` parsing of the amount fields.
+</CalloutBox>
