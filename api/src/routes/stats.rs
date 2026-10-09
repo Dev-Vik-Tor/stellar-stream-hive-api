@@ -30,6 +30,15 @@ pub async fn get_stats(State(state): State<AppState>) -> Result<Json<Stats>, Api
             .total_streamed
             .checked_add(view.streamed_amount)
             .ok_or_else(|| ApiError::Internal("total_streamed overflowed i128".into()))?;
+        let locked = if view.stream.status == StreamStatus::Cancelled {
+            view.withdrawable_amount
+        } else {
+            (stream.total_amount - stream.withdrawn).max(0)
+        };
+        stats.total_value_locked = stats
+            .total_value_locked
+            .checked_add(locked)
+            .ok_or_else(|| ApiError::Internal("total_value_locked overflowed i128".into()))?;
         stats.total_withdrawn = stats
             .total_withdrawn
             .checked_add(stream.withdrawn)

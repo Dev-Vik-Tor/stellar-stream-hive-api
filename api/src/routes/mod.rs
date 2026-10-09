@@ -204,4 +204,18 @@ mod tests {
         // streams 1 and 2 are active at ledger 150; 10 is cancelled
         assert_eq!(body["active_streams"], 2);
     }
+
+    #[tokio::test]
+    async fn stats_report_value_locked_net_of_withdrawals_and_refunds() {
+        let mut live = sample_stream("1");
+        live.withdrawn = 300; // 1000 deposited, 300 already paid out -> 700 locked
+        let mut cancelled = sample_stream("2");
+        cancelled.status = StreamStatus::Cancelled;
+        cancelled.cancelled_streamed = Some(400);
+        cancelled.withdrawn = 100; // recipient keeps 400, took 100 -> 300 still claimable
+
+        let (_, _, body) = get_json(app_with(150, vec![live, cancelled]).await, "/stats").await;
+        assert_eq!(body["total_value_locked"], "1000");
+        assert_eq!(body["total_withdrawn"], "400");
+    }
 }

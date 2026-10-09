@@ -21,7 +21,8 @@ curl http://localhost:8080/stats
   "total_streams": 128,
   "active_streams": 47,
   "total_streamed": "184500000000000",
-  "total_withdrawn": "97200000000000"
+  "total_withdrawn": "97200000000000",
+  "total_value_locked": "87300000000000"
 }
 ```
 
@@ -31,6 +32,7 @@ curl http://localhost:8080/stats
 | `active_streams` | number | Count currently in `active` status (`pending` streams are not counted -- see note below). |
 | `total_streamed` | string (i128) | Sum of `streamed_amount` across every stream, computed live at the indexer's latest known ledger. |
 | `total_withdrawn` | string (i128) | Sum of `withdrawn` across every stream. |
+| `total_value_locked` | string (i128) | Funds the vault still holds for streams: `total_amount - withdrawn` for pending, active and completed streams, and only the recipient's unclaimed share (`streamed_now - withdrawn`) for cancelled ones, since the remainder was refunded to the sender. |
 
 <CalloutBox variant="info" title="active_streams counts only Active, not Pending">
   This differs slightly from the Stream contract's own notion of "still
@@ -47,7 +49,7 @@ curl http://localhost:8080/stats
 On an empty index (no streams observed yet), this returns:
 
 ```json
-{ "total_streams": 0, "active_streams": 0, "total_streamed": "0", "total_withdrawn": "0" }
+{ "total_streams": 0, "active_streams": 0, "total_streamed": "0", "total_withdrawn": "0", "total_value_locked": "0" }
 ```
 
 **Errors:** `500 internal_error` if summing `streamed_amount` or `withdrawn`

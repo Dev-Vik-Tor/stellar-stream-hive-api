@@ -98,6 +98,12 @@ pub struct Stats {
     pub total_streamed: i128,
     #[serde(with = "serde_amount")]
     pub total_withdrawn: i128,
+    /// Funds still held by the vault for open streams: for a live or completed
+    /// stream `total_amount - withdrawn`; for a cancelled one only what the
+    /// recipient has yet to claim (`streamed_now - withdrawn`), since the rest
+    /// was refunded to the sender. Summed across tokens, like the other totals.
+    #[serde(with = "serde_amount")]
+    pub total_value_locked: i128,
 }
 
 /// Serializes `i128` amounts as decimal strings instead of JSON numbers.
