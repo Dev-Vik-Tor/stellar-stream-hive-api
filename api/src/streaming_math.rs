@@ -98,11 +98,9 @@ pub fn progress_percent(streamed: i128, total_amount: i128) -> u8 {
 /// unwithdrawn portion -- callers that need "how much is left to withdraw" should
 /// subtract `withdrawn` themselves, e.g. via `withdrawable_amount`.
 ///
-/// Not yet wired into the indexer's `Cancelled` event handler (see
-/// `indexer::apply_event`), which currently just flips `status` to `Cancelled` and
-/// leaves `withdrawn` as-is -- once the Stream contract's `Cancelled` event carries
-/// the on-chain refund amount (see the wire format documented in
-/// `indexer::events`), this is the function to reconcile it against.
+/// Reference implementation of the cancel split, kept for cross-checking. The
+/// indexer itself takes `streamed_now` straight from the contract's `cancel` event
+/// (see `indexer::events`), so this is only exercised by tests.
 #[allow(dead_code)]
 pub fn cancel_split(total_amount: i128, streamed_at_cancel: i128) -> (i128, i128) {
     let recipient_entitlement = streamed_at_cancel;

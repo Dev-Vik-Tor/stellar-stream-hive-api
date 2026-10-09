@@ -62,7 +62,7 @@ amount computation in this API (see
 The [Registry contract](/docs/contracts/registry#get_stats) exposes an
 on-chain `get_stats` function returning the same four fields. The two are
 computed independently -- the Registry from its own on-chain bookkeeping, this
-API from indexed `StreamCreated`/`Withdrawn`/`Cancelled` events -- and should
+API from indexed `create`/`withdraw`/`cancel` events -- and should
 always agree, modulo the indexer's poll interval (10 seconds by default). If
 they ever diverge for more than a poll cycle or two, that's a bug worth
 reporting: either the indexer missed/misdecoded an event, or the Registry's

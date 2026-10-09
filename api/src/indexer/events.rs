@@ -1,17 +1,18 @@
-//! Decodes Soroban contract events (`StreamCreated`, `Withdrawn`, `Cancelled`) out
+//! Decodes Soroban contract events (`create`, `withdraw`, `cancel`) out
 //! of a transaction's XDR result meta.
 //!
 //! # Event wire format
 //!
-//! This is the contract between the Stream contract and this indexer -- it is
-//! reproduced in full in the Stream contract reference
-//! (`docs/app/docs/contracts/stream/page.mdx`, "Events emitted"):
+//! This is the contract between the Stream contract and this indexer. The
+//! contract publishes typed `#[contractevent(data_format = "vec")]` events, so
+//! the topic is the snake_case struct name followed by the `#[topic]` fields,
+//! and the data is a `Vec` of the remaining fields in declaration order:
 //!
-//! | Event           | Topics                              | Data                                                                                                    |
-//! |-----------------|--------------------------------------|-----------------------------------------------------------------------------------------------------------|
-//! | `StreamCreated`  | `[Symbol("StreamCreated"), U64(id)]` | `Vec[Address(sender), Address(recipient), Address(token), I128(total_amount), U32(start_ledger), U32(end_ledger), U32(cliff_ledger), Bool(cancellable)]` |
-//! | `Withdrawn`      | `[Symbol("Withdrawn"), U64(id)]`     | `I128(amount_withdrawn_this_call)`                                                                          |
-//! | `Cancelled`      | `[Symbol("Cancelled"), U64(id)]`     | `I128(sender_refund_amount)`                                                                                |
+//! | Event      | Topics                          | Data (`Vec`)                                                                                          |
+//! |------------|---------------------------------|--------------------------------------------------------------------------------------------------------|
+//! | `create`   | `[Symbol("create"), U64(id)]`   | `[sender, recipient, token, total_amount: I128, start: U32, end: U32, cliff: U32, cancellable: Bool]` |
+//! | `withdraw` | `[Symbol("withdraw"), U64(id)]` | `[recipient, amount: I128]`                                                                           |
+//! | `cancel`   | `[Symbol("cancel"), U64(id)]`   | `[sender, streamed_now: I128, remainder: I128]`                                                       |
 //!
 //! Any transaction meta version we don't recognize, or any contract event that
 //! doesn't match this shape, is skipped with a warning rather than treated as a
@@ -36,10 +37,15 @@ pub enum DecodeError {
 pub enum StreamEvent {
     Created(Stream),
     Withdrawn { stream_id: String, amount: i128 },
-    Cancelled { stream_id: String },
+    Cancelled {
+        stream_id: String,
+        /// Amount that had streamed at the moment of cancellation; the recipient
+        /// keeps (and may still withdraw) this much.
+        streamed_now: i128,
+    },
 }
 
-/// Decodes every `StreamCreated` / `Withdrawn` / `Cancelled` event emitted by
+/// Decodes every `create` / `withdraw` / `cancel` event emitted by
 /// `contract_filter` (the Stream contract's 32-byte contract id) within one
 /// transaction's base64 `result_meta_xdr`.
 pub fn decode_stream_events(
@@ -92,11 +98,11 @@ fn parse_event(event: &ContractEvent) -> Result<Option<StreamEvent>, DecodeError
     };
 
     match name.as_str() {
-        "StreamCreated" => {
+        "create" => {
             let fields = sc_val_as_vec(&body.data)?;
             if fields.len() != 8 {
                 return Err(DecodeError::Malformed(format!(
-                    "StreamCreated data expected 8 fields, got {}",
+                    "create data expected 8 fields, got {}",
                     fields.len()
                 )));
             }
@@ -113,14 +119,36 @@ fn parse_event(event: &ContractEvent) -> Result<Option<StreamEvent>, DecodeError
                 cancellable: sc_val_as_bool(&fields[7])?,
                 status: StreamStatus::Pending,
                 created_at: chrono::Utc::now().timestamp(),
+                cancelled_streamed: None,
             };
             Ok(Some(StreamEvent::Created(stream)))
         }
-        "Withdrawn" => Ok(Some(StreamEvent::Withdrawn {
-            stream_id,
-            amount: sc_val_as_i128(&body.data)?,
-        })),
-        "Cancelled" => Ok(Some(StreamEvent::Cancelled { stream_id })),
+        "withdraw" => {
+            let fields = sc_val_as_vec(&body.data)?;
+            if fields.len() != 2 {
+                return Err(DecodeError::Malformed(format!(
+                    "withdraw data expected 2 fields, got {}",
+                    fields.len()
+                )));
+            }
+            Ok(Some(StreamEvent::Withdrawn {
+                stream_id,
+                amount: sc_val_as_i128(&fields[1])?,
+            }))
+        }
+        "cancel" => {
+            let fields = sc_val_as_vec(&body.data)?;
+            if fields.len() != 3 {
+                return Err(DecodeError::Malformed(format!(
+                    "cancel data expected 3 fields, got {}",
+                    fields.len()
+                )));
+            }
+            Ok(Some(StreamEvent::Cancelled {
+                stream_id,
+                streamed_now: sc_val_as_i128(&fields[1])?,
+            }))
+        }
         _ => Ok(None),
     }
 }
@@ -217,6 +245,10 @@ mod tests {
         }
     }
 
+    fn vec_val(fields: Vec<ScVal>) -> ScVal {
+        ScVal::Vec(Some(ScVec(fields.try_into().unwrap())))
+    }
+
     fn created_data(total: i128) -> ScVal {
         let fields: Vec<ScVal> = vec![
             account(1),
@@ -233,7 +265,7 @@ mod tests {
 
     #[test]
     fn decodes_stream_created() {
-        let e = event(Some(CONTRACT), vec![symbol("StreamCreated"), ScVal::U64(42)], created_data(5_000));
+        let e = event(Some(CONTRACT), vec![symbol("create"), ScVal::U64(42)], created_data(5_000));
         let Some(StreamEvent::Created(s)) = parse_event(&e).unwrap() else { panic!("expected Created") };
         assert_eq!(s.id, "42");
         assert_eq!(s.total_amount, 5_000);
@@ -247,14 +279,25 @@ mod tests {
 
     #[test]
     fn decodes_withdrawn_and_cancelled() {
-        let w = event(Some(CONTRACT), vec![symbol("Withdrawn"), ScVal::U64(3)], i128_val(250));
+        let w = event(
+            Some(CONTRACT),
+            vec![symbol("withdraw"), ScVal::U64(3)],
+            vec_val(vec![account(2), i128_val(250)]),
+        );
         let Some(StreamEvent::Withdrawn { stream_id, amount }) = parse_event(&w).unwrap() else {
             panic!("expected Withdrawn")
         };
         assert_eq!((stream_id.as_str(), amount), ("3", 250));
 
-        let c = event(Some(CONTRACT), vec![symbol("Cancelled"), ScVal::U64(3)], i128_val(10));
-        assert!(matches!(parse_event(&c).unwrap(), Some(StreamEvent::Cancelled { stream_id }) if stream_id == "3"));
+        let c = event(
+            Some(CONTRACT),
+            vec![symbol("cancel"), ScVal::U64(3)],
+            vec_val(vec![account(1), i128_val(400), i128_val(600)]),
+        );
+        assert!(matches!(
+            parse_event(&c).unwrap(),
+            Some(StreamEvent::Cancelled { stream_id, streamed_now: 400 }) if stream_id == "3"
+        ));
     }
 
     #[test]
@@ -272,15 +315,28 @@ mod tests {
         let no_topics = event(Some(CONTRACT), vec![], ScVal::Void);
         assert!(parse_event(&no_topics).unwrap().is_none());
 
-        let missing_id = event(Some(CONTRACT), vec![symbol("Withdrawn")], i128_val(1));
+        let missing_id = event(
+            Some(CONTRACT),
+            vec![symbol("withdraw")],
+            vec_val(vec![account(2), i128_val(1)]),
+        );
         assert!(parse_event(&missing_id).is_err());
 
-        let bad_id = event(Some(CONTRACT), vec![symbol("Withdrawn"), ScVal::Bool(true)], i128_val(1));
+        let bad_id = event(
+            Some(CONTRACT),
+            vec![symbol("withdraw"), ScVal::Bool(true)],
+            vec_val(vec![account(2), i128_val(1)]),
+        );
         assert!(parse_event(&bad_id).is_err());
+
+        let wrong_arity = event(Some(CONTRACT), vec![symbol("withdraw"), ScVal::U64(1)], i128_val(1));
+        assert!(parse_event(&wrong_arity).is_err());
+        let wrong_arity = event(Some(CONTRACT), vec![symbol("cancel"), ScVal::U64(1)], vec_val(vec![account(1)]));
+        assert!(parse_event(&wrong_arity).is_err());
 
         let short = event(
             Some(CONTRACT),
-            vec![symbol("StreamCreated"), ScVal::U64(1)],
+            vec![symbol("create"), ScVal::U64(1)],
             ScVal::Vec(Some(ScVec(vec![ScVal::U32(1)].try_into().unwrap()))),
         );
         assert!(parse_event(&short).is_err());

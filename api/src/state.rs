@@ -86,9 +86,10 @@ impl AppState {
         }
     }
 
-    pub async fn record_cancellation(&self, stream_id: &str) {
+    pub async fn record_cancellation(&self, stream_id: &str, streamed_now: i128) {
         if let Some(stream) = self.streams.write().await.get_mut(stream_id) {
             stream.status = crate::models::StreamStatus::Cancelled;
+            stream.cancelled_streamed = Some(streamed_now);
         }
     }
 }

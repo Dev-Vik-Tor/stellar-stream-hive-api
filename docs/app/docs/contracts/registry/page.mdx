@@ -11,7 +11,7 @@ export const metadata = {
 The Registry contract maintains an on-chain index of every stream and
 platform-wide aggregate statistics. It exists so that "list all streams" or
 "what's the platform's total volume" can be answered by a single contract
-call, without an off-chain indexer walking every `StreamCreated` event from
+call, without an off-chain indexer walking every `create` event from
 genesis. `stellar-stream-hive-api`'s own `/stats` endpoint mirrors the shape
 of `get_stats` (computed independently from indexed events, as a
 cross-check) -- see [API Reference: Stats](/docs/api/stats).

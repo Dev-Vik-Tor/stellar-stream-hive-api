@@ -73,8 +73,8 @@ curl -i "http://localhost:8080/streams?status=active&limit=20&offset=40"
 
 ### Effective status
 
-The indexer only observes three on-chain events (`StreamCreated`, `Withdrawn`,
-`Cancelled`), so it cannot be *told* when a stream moves from pending to
+The indexer only observes three on-chain events (`create`, `withdraw`,
+`cancel`), so it cannot be *told* when a stream moves from pending to
 active or from active to completed -- that happens purely because ledgers
 pass. The API derives it on every read from the latest ledger it has seen:
 

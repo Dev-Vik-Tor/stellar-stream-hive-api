@@ -4,7 +4,7 @@
 //! Stream contract (see docs/app/docs/contracts/stream/page.mdx in the docs site
 //! for the full field-by-field reference). Keeping the API's model identical to
 //! the contract's `Stream` struct means the indexer can populate it directly from
-//! decoded `StreamCreated` / `Withdrawn` / `Cancelled` contract events without any
+//! decoded `create` / `withdraw` / `cancel` contract events without any
 //! lossy translation.
 
 use serde::{Deserialize, Serialize};
@@ -66,6 +66,11 @@ pub struct Stream {
     pub status: StreamStatus,
     /// Unix timestamp (seconds) at which the stream was created.
     pub created_at: i64,
+    /// Amount that had streamed when the stream was cancelled, taken from the
+    /// contract's `cancel` event. The recipient keeps this much (minus what they
+    /// already withdrew). Internal to the indexer; not part of the API response.
+    #[serde(skip)]
+    pub cancelled_streamed: Option<i128>,
 }
 
 /// `Stream` plus the fields the API computes on read: how much has streamed so far,
@@ -150,7 +155,7 @@ impl Stream {
     pub fn to_view(&self, current_ledger: u32) -> Result<StreamView, crate::streaming_math::MathError> {
         let status = self.effective_status(current_ledger);
         let streamed = match status {
-            StreamStatus::Cancelled => self.withdrawn,
+            StreamStatus::Cancelled => self.cancelled_streamed.unwrap_or(self.withdrawn),
             _ => crate::streaming_math::streamed_amount(
                 self.total_amount,
                 self.start_ledger,
@@ -192,6 +197,7 @@ pub(crate) mod test_support {
             cancellable: true,
             status: StreamStatus::Pending,
             created_at: 0,
+            cancelled_streamed: None,
         }
     }
 }
@@ -238,6 +244,18 @@ mod tests {
         let v = s.to_view(150).unwrap();
         assert_eq!(v.streamed_amount, 300);
         assert_eq!(v.withdrawable_amount, 0);
+    }
+
+    #[test]
+    fn cancelled_view_uses_streamed_amount_from_the_cancel_event() {
+        let mut s = sample_stream("1");
+        s.status = StreamStatus::Cancelled;
+        s.withdrawn = 100;
+        s.cancelled_streamed = Some(400);
+        let v = s.to_view(9_999).unwrap();
+        assert_eq!(v.streamed_amount, 400);
+        assert_eq!(v.withdrawable_amount, 300);
+        assert_eq!(v.progress_percent, 40);
     }
 
     #[test]

@@ -86,7 +86,7 @@ Non-2xx responses return:
 ### Why `/streams/:id` can 404 even for a real stream id
 
 <CalloutBox variant="info">
-  The indexer only knows about streams whose `StreamCreated` event it has
+  The indexer only knows about streams whose `create` event it has
   actually observed since it started polling (see
   [why no database](https://github.com/Stellar-Hive/stellar-stream-hive-api/blob/main/api/README.md#why-no-database)).
   If you query a stream id that existed before this instance's process

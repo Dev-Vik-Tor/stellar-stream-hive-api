@@ -104,9 +104,9 @@ async fn apply_event(state: &AppState, event: events::StreamEvent) {
             tracing::info!(stream_id = %stream_id, amount, "indexer: withdrawal recorded");
             state.record_withdrawal(&stream_id, amount).await;
         }
-        events::StreamEvent::Cancelled { stream_id } => {
-            tracing::info!(stream_id = %stream_id, "indexer: stream cancelled");
-            state.record_cancellation(&stream_id).await;
+        events::StreamEvent::Cancelled { stream_id, streamed_now } => {
+            tracing::info!(stream_id = %stream_id, streamed_now, "indexer: stream cancelled");
+            state.record_cancellation(&stream_id, streamed_now).await;
         }
     }
 }

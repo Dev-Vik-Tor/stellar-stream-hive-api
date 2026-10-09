@@ -146,7 +146,7 @@ contract's own account.
 
 The Vault contract does not emit its own lifecycle events for indexing
 purposes -- `stellar-stream-hive-api` indexes stream lifecycle exclusively
-through the Stream contract's `StreamCreated`/`Withdrawn`/`Cancelled` events
+through the Stream contract's `create`/`withdraw`/`cancel` events
 (see [Stream contract: events emitted](/docs/contracts/stream#events-emitted)),
 since those already carry every figure ( amounts, ids) the indexer needs.
 Token transfers `release`/`refund` trigger do still surface as standard SEP-41
