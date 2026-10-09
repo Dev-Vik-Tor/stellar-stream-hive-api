@@ -42,6 +42,7 @@ your own deployment's host.
 | `GET` | [`/recipients/:address`](/docs/api/streams#get-recipientsaddress) | Streams received by an address |
 | `GET` | [`/stats`](/docs/api/stats) | Aggregate totals across every indexed stream |
 | `GET` | `/health` | Liveness check; always returns `200 ok` |
+| `GET` | `/ready` | Readiness: `{ synced, latest_ledger, contract_configured, indexed_streams }` |
 
 ## Response conventions
 

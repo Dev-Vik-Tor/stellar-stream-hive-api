@@ -1,29 +1,25 @@
 //! `GET /streams` and `GET /streams/:id`.
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
+    http::HeaderMap,
     Json,
 };
 
+use super::common::{paginated_views, ListParams};
 use crate::error::ApiError;
 use crate::models::StreamView;
 use crate::state::AppState;
 
-/// `GET /streams` -- every known stream, with live-computed `streamed_amount`,
-/// `withdrawable_amount`, and `progress_percent`.
-pub async fn list_streams(State(state): State<AppState>) -> Result<Json<Vec<StreamView>>, ApiError> {
-    let current_ledger = state.latest_ledger();
+/// `GET /streams` -- every known stream, newest first, with live-computed
+/// `streamed_amount`, `withdrawable_amount`, `progress_percent` and status.
+/// Supports `?status=`, `?limit=` and `?offset=`.
+pub async fn list_streams(
+    State(state): State<AppState>,
+    Query(params): Query<ListParams>,
+) -> Result<(HeaderMap, Json<Vec<StreamView>>), ApiError> {
     let streams = state.all_streams().await;
-
-    let views = streams
-        .iter()
-        .map(|s| {
-            s.to_view(current_ledger)
-                .map_err(|e| ApiError::Internal(format!("failed to compute stream view for {}: {e}", s.id)))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok(Json(views))
+    paginated_views(streams, state.latest_ledger(), &params)
 }
 
 /// `GET /streams/:id` -- full detail for one stream, 404 if unknown.

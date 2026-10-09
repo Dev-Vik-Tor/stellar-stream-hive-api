@@ -22,6 +22,19 @@ documentation.
 | GET    | `/recipients/:address`  | Streams received by an address                    |
 | GET    | `/stats`                | Aggregate totals across every indexed stream       |
 | GET    | `/health`               | Liveness check, always returns `200 ok`            |
+| GET    | `/ready`                | Readiness: indexer sync state and stream count     |
+
+List endpoints accept `?status=active|pending|completed|cancelled`, `?limit=` (1-200,
+default 50) and `?offset=`, return streams newest-first, and report the unpaginated
+match count in an `X-Total-Count` header. A stream's `status` is derived from the
+latest observed ledger, so it moves from `pending` to `active` to `completed` on its own.
+
+## Development
+
+```sh
+cargo test            # unit + HTTP route tests
+cargo clippy --all-targets -- -D warnings
+```
 
 ## Running locally
 

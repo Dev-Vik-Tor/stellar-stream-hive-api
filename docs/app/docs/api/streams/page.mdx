@@ -51,12 +51,51 @@ Every stream object returned by these endpoints has this shape:
 | `streamed_amount` / `withdrawable_amount` | string (i128) | Computed live -- see [Streaming Math](/docs/concepts/streaming-math). |
 | `progress_percent` | number | Integer 0-100, `streamed_amount / total_amount * 100`, rounded down. |
 
+## Filtering and pagination
+
+All three list endpoints (`/streams`, `/senders/:address`,
+`/recipients/:address`) accept the same optional query parameters:
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `status` | none | `pending`, `active`, `completed` or `cancelled`. Matches the *effective* status (see below). |
+| `limit` | `50` | Page size, `1`-`200`. Out-of-range values return `400`. |
+| `offset` | `0` | Number of streams to skip. |
+
+The response body is still a plain array. The number of streams matching the
+filter (before `limit`/`offset`) is returned in the `X-Total-Count` response
+header, so clients can page without changing how they parse the body.
+
+```bash
+curl -i "http://localhost:8080/streams?status=active&limit=20&offset=40"
+# x-total-count: 137
+```
+
+### Effective status
+
+The indexer only observes three on-chain events (`StreamCreated`, `Withdrawn`,
+`Cancelled`), so it cannot be *told* when a stream moves from pending to
+active or from active to completed -- that happens purely because ledgers
+pass. The API derives it on every read from the latest ledger it has seen:
+
+| Condition | `status` |
+|---|---|
+| stream was cancelled | `cancelled` (terminal) |
+| `latest_ledger < start_ledger` | `pending` |
+| `start_ledger <= latest_ledger < end_ledger` | `active` |
+| `latest_ledger >= end_ledger` | `completed` |
+
+Address path parameters on `/senders/:address` and `/recipients/:address` are
+validated: anything that is not a well-formed `G...` account or `C...`
+contract strkey returns `400 bad_request` instead of an empty list.
+
 ## `GET /streams`
 
 <ApiEndpoint method="GET" path="/streams" description="Every stream the indexer currently knows about." />
 
-No parameters. Returns a JSON array of [stream view](#stream-view-shape)
-objects, in no guaranteed order.
+Returns a JSON array of [stream view](#stream-view-shape) objects, newest
+first (highest numeric id first). See [Filtering and pagination](#filtering-and-pagination)
+for the query parameters.
 
 ```bash
 curl http://localhost:8080/streams

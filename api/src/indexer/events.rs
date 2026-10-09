@@ -182,3 +182,113 @@ fn sc_address_to_string(addr: &ScAddress) -> Result<String, DecodeError> {
         other => Err(DecodeError::Malformed(format!("unsupported address type: {other:?}"))),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use stellar_xdr::curr::{
+        AccountId, ContractEventType, ContractEventV0, ExtensionPoint, Hash, Int128Parts, PublicKey, ScSymbol,
+        ScVec, StringM, Uint256, ContractId,
+    };
+
+    const CONTRACT: [u8; 32] = [7; 32];
+
+    fn symbol(s: &str) -> ScVal {
+        ScVal::Symbol(ScSymbol(StringM::try_from(s).unwrap()))
+    }
+
+    fn account(byte: u8) -> ScVal {
+        ScVal::Address(ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256([byte; 32])))))
+    }
+
+    fn i128_val(v: i128) -> ScVal {
+        ScVal::I128(Int128Parts { hi: (v >> 64) as i64, lo: v as u64 })
+    }
+
+    fn event(contract: Option<[u8; 32]>, topics: Vec<ScVal>, data: ScVal) -> ContractEvent {
+        ContractEvent {
+            ext: ExtensionPoint::V0,
+            contract_id: contract.map(|c| ContractId(Hash(c))),
+            type_: ContractEventType::Contract,
+            body: ContractEventBody::V0(ContractEventV0 {
+                topics: topics.try_into().unwrap(),
+                data,
+            }),
+        }
+    }
+
+    fn created_data(total: i128) -> ScVal {
+        let fields: Vec<ScVal> = vec![
+            account(1),
+            account(2),
+            ScVal::Address(ScAddress::Contract(ContractId(Hash([9; 32])))),
+            i128_val(total),
+            ScVal::U32(100),
+            ScVal::U32(200),
+            ScVal::U32(120),
+            ScVal::Bool(true),
+        ];
+        ScVal::Vec(Some(ScVec(fields.try_into().unwrap())))
+    }
+
+    #[test]
+    fn decodes_stream_created() {
+        let e = event(Some(CONTRACT), vec![symbol("StreamCreated"), ScVal::U64(42)], created_data(5_000));
+        let Some(StreamEvent::Created(s)) = parse_event(&e).unwrap() else { panic!("expected Created") };
+        assert_eq!(s.id, "42");
+        assert_eq!(s.total_amount, 5_000);
+        assert_eq!((s.start_ledger, s.end_ledger, s.cliff_ledger), (100, 200, 120));
+        assert!(s.cancellable);
+        assert_eq!(s.withdrawn, 0);
+        assert!(s.sender.starts_with('G') && s.recipient.starts_with('G'));
+        assert_ne!(s.sender, s.recipient);
+        assert!(s.token.starts_with('C'));
+    }
+
+    #[test]
+    fn decodes_withdrawn_and_cancelled() {
+        let w = event(Some(CONTRACT), vec![symbol("Withdrawn"), ScVal::U64(3)], i128_val(250));
+        let Some(StreamEvent::Withdrawn { stream_id, amount }) = parse_event(&w).unwrap() else {
+            panic!("expected Withdrawn")
+        };
+        assert_eq!((stream_id.as_str(), amount), ("3", 250));
+
+        let c = event(Some(CONTRACT), vec![symbol("Cancelled"), ScVal::U64(3)], i128_val(10));
+        assert!(matches!(parse_event(&c).unwrap(), Some(StreamEvent::Cancelled { stream_id }) if stream_id == "3"));
+    }
+
+    #[test]
+    fn i128_round_trips_values_above_u64() {
+        let big: i128 = 1_i128 << 80;
+        assert_eq!(sc_val_as_i128(&i128_val(big)).unwrap(), big);
+        assert_eq!(sc_val_as_i128(&i128_val(0)).unwrap(), 0);
+    }
+
+    #[test]
+    fn unknown_events_are_ignored_and_bad_shapes_rejected() {
+        let other = event(Some(CONTRACT), vec![symbol("SomethingElse"), ScVal::U64(1)], ScVal::Void);
+        assert!(parse_event(&other).unwrap().is_none());
+
+        let no_topics = event(Some(CONTRACT), vec![], ScVal::Void);
+        assert!(parse_event(&no_topics).unwrap().is_none());
+
+        let missing_id = event(Some(CONTRACT), vec![symbol("Withdrawn")], i128_val(1));
+        assert!(parse_event(&missing_id).is_err());
+
+        let bad_id = event(Some(CONTRACT), vec![symbol("Withdrawn"), ScVal::Bool(true)], i128_val(1));
+        assert!(parse_event(&bad_id).is_err());
+
+        let short = event(
+            Some(CONTRACT),
+            vec![symbol("StreamCreated"), ScVal::U64(1)],
+            ScVal::Vec(Some(ScVec(vec![ScVal::U32(1)].try_into().unwrap()))),
+        );
+        assert!(parse_event(&short).is_err());
+    }
+
+    #[test]
+    fn invalid_meta_xdr_is_an_error_not_a_panic() {
+        assert!(matches!(decode_stream_events("not base64!!", &CONTRACT), Err(DecodeError::Xdr(_))));
+        assert!(matches!(decode_stream_events("AAAA", &CONTRACT), Err(DecodeError::Xdr(_))));
+    }
+}

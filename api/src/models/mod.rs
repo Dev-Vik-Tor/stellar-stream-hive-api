@@ -115,26 +115,41 @@ pub mod serde_amount {
     }
 }
 
-impl StreamStatus {
-    /// True for streams the indexer should keep recomputing accrual for on every
-    /// read. Part of the public model API for consumers of this crate as a library
-    /// (e.g. future batch jobs); not currently called from the HTTP routes, which
-    /// recompute accrual unconditionally for simplicity.
-    #[allow(dead_code)]
-    pub fn is_active(self) -> bool {
-        matches!(self, StreamStatus::Active | StreamStatus::Pending)
-    }
-}
 
 impl Stream {
+    /// The status as of `current_ledger`.
+    ///
+    /// The indexer only ever learns about three events (created, withdrawn,
+    /// cancelled), so the stored `status` is `Pending` from creation until a
+    /// cancellation arrives. The lifecycle transitions that happen purely because
+    /// ledgers pass (Pending -> Active -> Completed) are derived here instead:
+    ///
+    /// - `Cancelled` is terminal and always wins.
+    /// - `current_ledger < start_ledger` -> `Pending`
+    /// - `start_ledger <= current_ledger < end_ledger` -> `Active`
+    /// - `current_ledger >= end_ledger` -> `Completed`
+    pub fn effective_status(&self, current_ledger: u32) -> StreamStatus {
+        if self.status == StreamStatus::Cancelled {
+            StreamStatus::Cancelled
+        } else if current_ledger >= self.end_ledger {
+            StreamStatus::Completed
+        } else if current_ledger >= self.start_ledger {
+            StreamStatus::Active
+        } else {
+            StreamStatus::Pending
+        }
+    }
+
     /// Builds the read-time `StreamView`, computing `streamed_amount` fresh against
     /// `current_ledger` using the same formula as the contract (see
-    /// `crate::streaming_math`). For a `Cancelled` stream, accrual is frozen: we
-    /// report `total_amount - withdrawn` as already-settled rather than continuing
-    /// to project accrual past the cancellation point, since the contract does not
+    /// `crate::streaming_math`). The returned view carries the *effective* status
+    /// (see [`Stream::effective_status`]). For a `Cancelled` stream, accrual is
+    /// frozen: we report `withdrawn` as already-settled rather than continuing to
+    /// project accrual past the cancellation point, since the contract does not
     /// track the ledger at which cancellation happened separately from `withdrawn`.
     pub fn to_view(&self, current_ledger: u32) -> Result<StreamView, crate::streaming_math::MathError> {
-        let streamed = match self.status {
+        let status = self.effective_status(current_ledger);
+        let streamed = match status {
             StreamStatus::Cancelled => self.withdrawn,
             _ => crate::streaming_math::streamed_amount(
                 self.total_amount,
@@ -147,11 +162,90 @@ impl Stream {
         let withdrawable = crate::streaming_math::withdrawable_amount(streamed, self.withdrawn);
         let progress = crate::streaming_math::progress_percent(streamed, self.total_amount);
 
+        let mut stream = self.clone();
+        stream.status = status;
+
         Ok(StreamView {
-            stream: self.clone(),
+            stream,
             streamed_amount: streamed,
             withdrawable_amount: withdrawable,
             progress_percent: progress,
         })
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    pub fn sample_stream(id: &str) -> Stream {
+        Stream {
+            id: id.to_string(),
+            sender: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN7".to_string(),
+            recipient: "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H".to_string(),
+            token: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC".to_string(),
+            total_amount: 1_000,
+            withdrawn: 0,
+            start_ledger: 100,
+            end_ledger: 200,
+            cliff_ledger: 100,
+            cancellable: true,
+            status: StreamStatus::Pending,
+            created_at: 0,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::sample_stream;
+    use super::*;
+
+    #[test]
+    fn status_is_derived_from_the_ledger() {
+        let s = sample_stream("1");
+        assert_eq!(s.effective_status(50), StreamStatus::Pending);
+        assert_eq!(s.effective_status(100), StreamStatus::Active);
+        assert_eq!(s.effective_status(199), StreamStatus::Active);
+        assert_eq!(s.effective_status(200), StreamStatus::Completed);
+        assert_eq!(s.effective_status(10_000), StreamStatus::Completed);
+    }
+
+    #[test]
+    fn cancelled_is_terminal() {
+        let mut s = sample_stream("1");
+        s.status = StreamStatus::Cancelled;
+        assert_eq!(s.effective_status(0), StreamStatus::Cancelled);
+        assert_eq!(s.effective_status(150), StreamStatus::Cancelled);
+        assert_eq!(s.effective_status(500), StreamStatus::Cancelled);
+    }
+
+    #[test]
+    fn view_reports_effective_status_and_accrual() {
+        let s = sample_stream("1");
+        let v = s.to_view(150).unwrap();
+        assert_eq!(v.stream.status, StreamStatus::Active);
+        assert_eq!(v.streamed_amount, 500);
+        assert_eq!(v.withdrawable_amount, 500);
+        assert_eq!(v.progress_percent, 50);
+    }
+
+    #[test]
+    fn cancelled_view_freezes_accrual_at_withdrawn() {
+        let mut s = sample_stream("1");
+        s.status = StreamStatus::Cancelled;
+        s.withdrawn = 300;
+        let v = s.to_view(150).unwrap();
+        assert_eq!(v.streamed_amount, 300);
+        assert_eq!(v.withdrawable_amount, 0);
+    }
+
+    #[test]
+    fn amounts_serialize_as_strings() {
+        let v = sample_stream("1").to_view(150).unwrap();
+        let json = serde_json::to_value(&v).unwrap();
+        assert_eq!(json["total_amount"], "1000");
+        assert_eq!(json["streamed_amount"], "500");
+        assert_eq!(json["status"], "active");
     }
 }

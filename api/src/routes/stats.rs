@@ -10,17 +10,21 @@ pub async fn get_stats(State(state): State<AppState>) -> Result<Json<Stats>, Api
     let current_ledger = state.latest_ledger();
     let streams = state.all_streams().await;
 
-    let mut stats = Stats::default();
-    stats.total_streams = streams.len() as u64;
+    let mut stats = Stats {
+        total_streams: streams.len() as u64,
+        ..Stats::default()
+    };
 
     for stream in &streams {
-        if matches!(stream.status, StreamStatus::Active) {
-            stats.active_streams += 1;
-        }
-
         let view = stream
             .to_view(current_ledger)
             .map_err(|e| ApiError::Internal(format!("failed to compute stream view for {}: {e}", stream.id)))?;
+
+        // Use the view's effective status: the stored status is only ever
+        // Pending/Cancelled, so counting it directly would never see an active stream.
+        if view.stream.status == StreamStatus::Active {
+            stats.active_streams += 1;
+        }
 
         stats.total_streamed = stats
             .total_streamed

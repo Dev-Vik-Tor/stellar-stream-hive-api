@@ -116,7 +116,7 @@ mod tests {
 
     /// The worked example from the docs: a 30-day, 3,000 XLM payroll stream.
     /// 1 ledger ~= 5s, so 30 days = 2,592,000s = 518,400 ledgers.
-    const TOTAL: i128 = 3_000_0000000; // 3000 XLM at 7 decimal stroops
+    const TOTAL: i128 = 30_000_000_000; // 3000 XLM at 7 decimal stroops
     const START: u32 = 1_000_000;
     const END: u32 = START + 518_400;
 
@@ -185,7 +185,7 @@ mod tests {
         // then multiply by 1, losing precision compared to multiplying first.
         let per_ledger_if_divided_first = TOTAL / 518_400; // truncates
         let one_ledger_in = streamed_amount(TOTAL, START, END, START, START + 1).unwrap();
-        assert_eq!(one_ledger_in, (TOTAL * 1) / 518_400);
+        assert_eq!(one_ledger_in, TOTAL / 518_400);
         // The multiply-first result is >= the naive divide-first-then-multiply result.
         assert!(one_ledger_in >= per_ledger_if_divided_first);
     }
