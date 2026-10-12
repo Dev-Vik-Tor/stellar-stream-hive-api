@@ -69,6 +69,7 @@ mod tests {
             stream_contract_id: crate::config::STREAM_CONTRACT_ID_PLACEHOLDER.into(),
             bind_addr: "127.0.0.1:0".into(),
             poll_interval_secs: 10,
+            cors_allowed_origins: Vec::new(),
         }
     }
 

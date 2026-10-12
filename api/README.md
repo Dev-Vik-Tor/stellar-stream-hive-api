@@ -47,6 +47,12 @@ The server binds to `0.0.0.0:8080` by default (override with `BIND_ADDR`). On
 startup it spawns a background task that polls Horizon every 10 seconds
 (`POLL_INTERVAL_SECS`) for new stream activity.
 
+By default any browser origin may call the API (it is read-only and uses no
+cookies). To restrict it to your own frontend, set `CORS_ALLOWED_ORIGINS` to a
+comma-separated list such as `https://app.example,https://staging.example`.
+Responses expose `X-Total-Count` to browsers so paginated lists work
+cross-origin.
+
 **Important:** `STREAM_CONTRACT_ID` defaults to an obvious placeholder because
 the [contracts repo](https://github.com/Stellar-Hive/stellar-stream-hive-contract)
 has not deployed the Stream contract yet. Until you set it to a real `C...`

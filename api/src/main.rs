@@ -1,4 +1,5 @@
 mod config;
+mod cors;
 mod error;
 mod indexer;
 mod models;
@@ -8,7 +9,7 @@ mod streaming_math;
 
 use std::net::SocketAddr;
 
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::trace::TraceLayer;
 
 use config::Config;
 use state::AppState;
@@ -41,6 +42,7 @@ async fn main() {
         }
     };
 
+    let cors = cors::layer(&config.cors_allowed_origins);
     let state = AppState::new(config);
 
     // Background task: poll Horizon on a fixed interval and update `state` with any
@@ -49,7 +51,7 @@ async fn main() {
     // the next tick rather than taking the whole process down.
     tokio::spawn(indexer::run(state.clone()));
 
-    let app = routes::router(state).layer(TraceLayer::new_for_http()).layer(CorsLayer::permissive());
+    let app = routes::router(state).layer(TraceLayer::new_for_http()).layer(cors);
 
     tracing::info!(%bind_addr, "starting stellar-stream-hive-api");
 
