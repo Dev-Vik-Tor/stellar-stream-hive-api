@@ -27,7 +27,7 @@ async fn health() -> &'static str {
 
 #[derive(Serialize)]
 struct Readiness {
-    /// True once the indexer has observed a ledger from Horizon.
+    /// True once the indexer has observed a ledger from Soroban RPC.
     synced: bool,
     latest_ledger: u32,
     /// True when `STREAM_CONTRACT_ID` is a real contract address, i.e. the
@@ -65,10 +65,11 @@ mod tests {
 
     fn test_config() -> Config {
         Config {
-            horizon_url: "http://localhost".into(),
+            soroban_rpc_url: "http://localhost".into(),
             stream_contract_id: crate::config::STREAM_CONTRACT_ID_PLACEHOLDER.into(),
             bind_addr: "127.0.0.1:0".into(),
             poll_interval_secs: 10,
+            backfill_ledgers: 100,
             cors_allowed_origins: Vec::new(),
         }
     }

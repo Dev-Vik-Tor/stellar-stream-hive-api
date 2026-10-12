@@ -8,7 +8,7 @@ export const metadata = {
 
 # API Reference: Overview
 
-`stellar-stream-hive-api` is a Rust/Axum service that polls Horizon, decodes
+`stellar-stream-hive-api` is a Rust/Axum service that reads Soroban RPC, decodes
 Soroban events emitted by the [Stream contract](/docs/contracts/stream), and
 serves the resulting index over a small REST API. It holds everything
 in memory (no database) and re-syncs from "now" on every restart -- see the
@@ -62,7 +62,7 @@ your own deployment's host.
   reformatting.
 - `streamed_amount`, `withdrawable_amount`, and `progress_percent` on every
   stream view are computed **live**, against the indexer's most recently
-  observed Horizon ledger, on every request -- they are never stale beyond
+  observed ledger, on every request -- they are never stale beyond
   the indexer's poll interval (10 seconds by default).
 
 ## Error format

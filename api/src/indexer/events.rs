@@ -1,5 +1,5 @@
 //! Decodes Soroban contract events (`create`, `withdraw`, `cancel`) out
-//! of a transaction's XDR result meta.
+//! of Soroban RPC `getEvents` results.
 //!
 //! # Event wire format
 //!
@@ -19,7 +19,9 @@
 //! fatal error -- a single malformed or unrelated event must never take down the
 //! indexer loop.
 
-use stellar_xdr::curr::{ContractEvent, ContractEventBody, Limits, ReadXdr, ScAddress, ScVal, TransactionMeta};
+use stellar_xdr::curr::{Limits, ReadXdr, ScAddress, ScVal};
+#[cfg(test)]
+use stellar_xdr::curr::{ContractEvent, ContractEventBody};
 use thiserror::Error;
 
 use crate::models::{Stream, StreamStatus};
@@ -45,61 +47,46 @@ pub enum StreamEvent {
     },
 }
 
-/// Decodes every `create` / `withdraw` / `cancel` event emitted by
-/// `contract_filter` (the Stream contract's 32-byte contract id) within one
-/// transaction's base64 `result_meta_xdr`.
-pub fn decode_stream_events(
-    meta_xdr_b64: &str,
-    contract_filter: &[u8; 32],
-) -> Result<Vec<StreamEvent>, DecodeError> {
-    let meta = TransactionMeta::from_xdr_base64(meta_xdr_b64, Limits::none())
-        .map_err(|e| DecodeError::Xdr(e.to_string()))?;
-
-    let raw_events: Vec<ContractEvent> = match meta {
-        // Protocol <= ~21: Soroban events live under `soroban_meta.events`.
-        TransactionMeta::V3(v3) => v3
-            .soroban_meta
-            .map(|sm| sm.events.iter().cloned().collect())
-            .unwrap_or_default(),
-        // Protocol >= ~22: events moved to a top-level, stage-tagged list.
-        TransactionMeta::V4(v4) => v4.events.iter().map(|te| te.event.clone()).collect(),
-        // V0/V1/V2 predate Soroban entirely -- no contract events possible.
-        TransactionMeta::V0(_) | TransactionMeta::V1(_) | TransactionMeta::V2(_) => Vec::new(),
-    };
-
-    let mut out = Vec::new();
-    for event in &raw_events {
-        let Some(contract_id) = &event.contract_id else {
-            continue;
-        };
-        if contract_id.0 .0 != *contract_filter {
-            continue;
-        }
-        match parse_event(event) {
-            Ok(Some(parsed)) => out.push(parsed),
-            Ok(None) => { /* not a stream lifecycle event (or a diagnostic-only event) -- ignore */ }
-            Err(e) => tracing::warn!(error = %e, "skipping malformed stream contract event"),
-        }
-    }
-    Ok(out)
+/// Decodes one event as returned by Soroban RPC `getEvents`: base64 XDR topics
+/// and value. Returns `Ok(None)` for events that are not `create` / `withdraw` /
+/// `cancel` lifecycle events. The caller filters by contract id (the RPC already
+/// does so server-side).
+pub fn decode_rpc_event(topics_b64: &[String], value_b64: &str) -> Result<Option<StreamEvent>, DecodeError> {
+    let topics = topics_b64
+        .iter()
+        .map(|t| ScVal::from_xdr_base64(t, Limits::none()).map_err(|e| DecodeError::Xdr(e.to_string())))
+        .collect::<Result<Vec<_>, _>>()?;
+    let data = ScVal::from_xdr_base64(value_b64, Limits::none()).map_err(|e| DecodeError::Xdr(e.to_string()))?;
+    parse_parts(&topics, &data)
 }
 
+#[cfg(test)]
 fn parse_event(event: &ContractEvent) -> Result<Option<StreamEvent>, DecodeError> {
     let ContractEventBody::V0(body) = &event.body;
+    parse_parts(body.topics.as_slice(), &body.data)
+}
 
-    let Some(ScVal::Symbol(name)) = body.topics.first() else {
+fn parse_parts(topics: &[ScVal], data: &ScVal) -> Result<Option<StreamEvent>, DecodeError> {
+    let Some(ScVal::Symbol(name)) = topics.first() else {
         return Ok(None);
     };
     let name = name.0.to_string();
 
-    let stream_id = match body.topics.get(1) {
+    // The contract also emits events with no stream id (`pause`, `unpause`,
+    // `admin_transfer`), and token-style events may appear too. Only the three
+    // lifecycle events carry a stream id, so don't demand one for anything else.
+    if !matches!(name.as_str(), "create" | "withdraw" | "cancel") {
+        return Ok(None);
+    }
+
+    let stream_id = match topics.get(1) {
         Some(v) => sc_val_to_stream_id(v)?,
         None => return Err(DecodeError::Malformed(format!("{name} event missing stream id topic"))),
     };
 
     match name.as_str() {
         "create" => {
-            let fields = sc_val_as_vec(&body.data)?;
+            let fields = sc_val_as_vec(data)?;
             if fields.len() != 8 {
                 return Err(DecodeError::Malformed(format!(
                     "create data expected 8 fields, got {}",
@@ -124,7 +111,7 @@ fn parse_event(event: &ContractEvent) -> Result<Option<StreamEvent>, DecodeError
             Ok(Some(StreamEvent::Created(stream)))
         }
         "withdraw" => {
-            let fields = sc_val_as_vec(&body.data)?;
+            let fields = sc_val_as_vec(data)?;
             if fields.len() != 2 {
                 return Err(DecodeError::Malformed(format!(
                     "withdraw data expected 2 fields, got {}",
@@ -137,7 +124,7 @@ fn parse_event(event: &ContractEvent) -> Result<Option<StreamEvent>, DecodeError
             }))
         }
         "cancel" => {
-            let fields = sc_val_as_vec(&body.data)?;
+            let fields = sc_val_as_vec(data)?;
             if fields.len() != 3 {
                 return Err(DecodeError::Malformed(format!(
                     "cancel data expected 3 fields, got {}",
@@ -343,8 +330,31 @@ mod tests {
     }
 
     #[test]
-    fn invalid_meta_xdr_is_an_error_not_a_panic() {
-        assert!(matches!(decode_stream_events("not base64!!", &CONTRACT), Err(DecodeError::Xdr(_))));
-        assert!(matches!(decode_stream_events("AAAA", &CONTRACT), Err(DecodeError::Xdr(_))));
+    fn invalid_rpc_xdr_is_an_error_not_a_panic() {
+        let good_topic = "AAAADwAAAAZjcmVhdGUAAA==".to_string(); // Symbol("create")
+        assert!(matches!(decode_rpc_event(&["not base64!!".into()], "AAAA"), Err(DecodeError::Xdr(_))));
+        assert!(matches!(decode_rpc_event(std::slice::from_ref(&good_topic), "AAAA"), Err(DecodeError::Xdr(_))));
+        assert!(matches!(decode_rpc_event(&[good_topic], "also not xdr"), Err(DecodeError::Xdr(_))));
+    }
+
+    #[test]
+    fn rpc_events_without_a_known_name_are_ignored() {
+        use stellar_xdr::curr::WriteXdr;
+        // a Symbol("transfer") topic: some other contract-style event
+        let topic = ScVal::Symbol("transfer".try_into().unwrap()).to_xdr_base64(Limits::none()).unwrap();
+        let value = ScVal::U32(1).to_xdr_base64(Limits::none()).unwrap();
+        assert!(decode_rpc_event(&[topic], &value).unwrap().is_none());
+        assert!(decode_rpc_event(&[], &value).unwrap().is_none());
+    }
+
+    #[test]
+    fn admin_events_without_a_stream_id_are_ignored_not_errors() {
+        use stellar_xdr::curr::WriteXdr;
+        // `pause` / `unpause` / `admin_transfer` have a single topic and no stream id.
+        for name in ["pause", "unpause", "admin_transfer"] {
+            let topic = ScVal::Symbol(name.try_into().unwrap()).to_xdr_base64(Limits::none()).unwrap();
+            let value = ScVal::U32(1).to_xdr_base64(Limits::none()).unwrap();
+            assert!(decode_rpc_event(&[topic], &value).unwrap().is_none(), "{name}");
+        }
     }
 }

@@ -29,7 +29,7 @@ async fn main() {
         tracing::warn!(
             stream_contract_id = %config.stream_contract_id,
             "STREAM_CONTRACT_ID is not set to a real deployed contract address yet; \
-             the indexer will poll Horizon but will not be able to match or decode \
+             the indexer will track ledgers but will not be able to match or decode \
              stream contract events until this is set. See README.md."
         );
     }
@@ -45,9 +45,9 @@ async fn main() {
     let cors = cors::layer(&config.cors_allowed_origins);
     let state = AppState::new(config);
 
-    // Background task: poll Horizon on a fixed interval and update `state` with any
+    // Background task: poll Soroban RPC on a fixed interval and update `state` with any
     // new stream activity. This runs for the lifetime of the process; if it errors
-    // on a given tick (e.g. Horizon is briefly unavailable) it logs and retries on
+    // on a given tick (e.g. the RPC is briefly unavailable) it logs and retries on
     // the next tick rather than taking the whole process down.
     tokio::spawn(indexer::run(state.clone()));
 

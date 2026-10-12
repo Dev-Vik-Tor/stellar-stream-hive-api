@@ -1,7 +1,7 @@
 //! Shared, in-memory application state.
 //!
 //! v1 deliberately has no database: the indexer rebuilds its view of the world by
-//! replaying Horizon from genesis-of-interest on every process start, and holds it
+//! replaying chain history from genesis-of-interest on every process start, and holds it
 //! in memory behind a `RwLock` for the lifetime of the process. This is simple and
 //! adequate for an indexer whose source of truth is always the chain itself; a
 //! restart just means a brief re-sync. A future version can swap this out for a
@@ -22,7 +22,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     /// All known streams, keyed by stream id.
     streams: Arc<RwLock<HashMap<String, Stream>>>,
-    /// The most recent ledger sequence observed from Horizon. Used to compute live
+    /// The most recent ledger sequence observed from Soroban RPC. Used to compute live
     /// `streamed_amount` for active streams on every read. Starts at 0 until the
     /// indexer's first successful poll.
     latest_ledger: Arc<AtomicU32>,

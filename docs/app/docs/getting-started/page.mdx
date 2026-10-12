@@ -133,10 +133,10 @@ that holds the money is a separate contract from the one you just called, see
 |---|---|---|---|
 | Testnet | `https://horizon-testnet.stellar.org` | `https://soroban-testnet.stellar.org` | Default for this API and all examples in these docs. Reset periodically by SDF -- don't rely on long-lived testnet state. |
 | Futurenet | `https://horizon-futurenet.stellar.org` | `https://rpc-futurenet.stellar.org` | Bleeding-edge protocol features; not used by this platform's default configuration. |
-| Mainnet | `https://horizon.stellar.org` | `https://mainnet.sorobanrpc.com` (third-party; SDF does not run a public mainnet RPC) | Real funds. Do not point `HORIZON_URL` here until the contracts have been audited and formally deployed. |
+| Mainnet | `https://horizon.stellar.org` | `https://mainnet.sorobanrpc.com` (third-party; SDF does not run a public mainnet RPC) | Real funds. Do not point `SOROBAN_RPC_URL` here until the contracts have been audited and formally deployed. |
 
-The API's indexer defaults to testnet Horizon (`HORIZON_URL` environment
-variable) -- see [`api/README.md`](https://github.com/Stellar-Hive/stellar-stream-hive-api/blob/main/api/README.md).
+The API's indexer reads contract events from the Soroban RPC (`SOROBAN_RPC_URL`
+environment variable, default: testnet) -- see [`api/README.md`](https://github.com/Stellar-Hive/stellar-stream-hive-api/blob/main/api/README.md).
 
 ## Deployed contract addresses
 

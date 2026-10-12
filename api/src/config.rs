@@ -11,21 +11,26 @@ use std::env;
 /// where the real addresses will be published once available.
 pub const STREAM_CONTRACT_ID_PLACEHOLDER: &str = "CONTRACT_ID_NOT_YET_DEPLOYED_SET_STREAM_CONTRACT_ID_ENV_VAR";
 
-pub const DEFAULT_HORIZON_URL: &str = "https://horizon-testnet.stellar.org";
+pub const DEFAULT_SOROBAN_RPC_URL: &str = "https://soroban-testnet.stellar.org";
+/// ~24 hours of ledgers at 5s each: how far back the first `getEvents` call reaches.
+pub const DEFAULT_BACKFILL_LEDGERS: u32 = 17_280;
 pub const DEFAULT_BIND_ADDR: &str = "0.0.0.0:8080";
 pub const DEFAULT_POLL_INTERVAL_SECS: u64 = 10;
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Base URL of the Horizon instance to poll. Defaults to public testnet.
-    pub horizon_url: String,
+    /// Soroban RPC endpoint the indexer reads contract events from. Defaults to public testnet.
+    pub soroban_rpc_url: String,
     /// The Stream contract's `C...` strkey address. See `STREAM_CONTRACT_ID_PLACEHOLDER`
     /// for why this defaults to an obvious placeholder rather than a real-looking value.
     pub stream_contract_id: String,
     /// Socket address the HTTP server binds to.
     pub bind_addr: String,
-    /// How often the indexer polls Horizon for new activity.
+    /// How often the indexer polls Soroban RPC for new events.
     pub poll_interval_secs: u64,
+    /// How many ledgers behind the tip the first poll starts, so a restart recovers
+    /// recent activity. Must fit inside the RPC's retention window.
+    pub backfill_ledgers: u32,
     /// Browser origins allowed to call the API (`CORS_ALLOWED_ORIGINS`, comma
     /// separated). Empty means any origin, which is safe for this read-only,
     /// credential-free API; see [`crate::cors`].
@@ -35,7 +40,7 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Self {
         Self {
-            horizon_url: env::var("HORIZON_URL").unwrap_or_else(|_| DEFAULT_HORIZON_URL.to_string()),
+            soroban_rpc_url: env::var("SOROBAN_RPC_URL").unwrap_or_else(|_| DEFAULT_SOROBAN_RPC_URL.to_string()),
             stream_contract_id: env::var("STREAM_CONTRACT_ID")
                 .unwrap_or_else(|_| STREAM_CONTRACT_ID_PLACEHOLDER.to_string()),
             bind_addr: env::var("BIND_ADDR").unwrap_or_else(|_| DEFAULT_BIND_ADDR.to_string()),
@@ -43,6 +48,10 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(DEFAULT_POLL_INTERVAL_SECS),
+            backfill_ledgers: env::var("INDEXER_BACKFILL_LEDGERS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(DEFAULT_BACKFILL_LEDGERS),
             cors_allowed_origins: parse_origins(&env::var("CORS_ALLOWED_ORIGINS").unwrap_or_default()),
         }
     }
