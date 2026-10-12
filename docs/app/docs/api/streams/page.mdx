@@ -61,6 +61,8 @@ All three list endpoints (`/streams`, `/senders/:address`,
 | `status` | none | `pending`, `active`, `completed` or `cancelled`. Matches the *effective* status (see below). |
 | `limit` | `50` | Page size, `1`-`200`. Out-of-range values return `400`. |
 | `offset` | `0` | Number of streams to skip. |
+| `sort` | `id` | One of `id` (creation order), `start_ledger`, `end_ledger`, `total_amount`, `withdrawable_amount`. Ties break by numeric id, so pages are stable. |
+| `order` | `desc` | `desc` or `asc`. With the defaults the list is newest first. |
 
 The response body is still a plain array. The number of streams matching the
 filter (before `limit`/`offset`) is returned in the `X-Total-Count` response

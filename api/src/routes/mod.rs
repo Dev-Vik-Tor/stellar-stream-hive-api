@@ -138,6 +138,80 @@ mod tests {
         assert_eq!(ids, ["10", "2", "1"]);
     }
 
+    async fn ids(app: Router, uri: &str) -> Vec<String> {
+        let (status, _, body) = get_json(app, uri).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        body.as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap().to_string()).collect()
+    }
+
+    #[tokio::test]
+    async fn order_asc_by_id_is_numeric_not_lexicographic() {
+        let app = app_with(150, streams()).await;
+        assert_eq!(ids(app, "/streams?order=asc").await, ["1", "2", "10"]);
+    }
+
+    #[tokio::test]
+    async fn sorts_by_ledger_fields_with_id_as_tiebreaker() {
+        // end ledgers: 1 -> 200, 2 -> 1000, 10 -> 1000
+        let app = app_with(150, streams()).await;
+        assert_eq!(ids(app.clone(), "/streams?sort=end_ledger&order=asc").await, ["1", "2", "10"]);
+        assert_eq!(ids(app, "/streams?sort=end_ledger&order=desc").await, ["10", "2", "1"]);
+    }
+
+    #[tokio::test]
+    async fn sorts_by_amounts() {
+        let mut a = sample_stream("1");
+        a.total_amount = 500;
+        let mut b = sample_stream("2");
+        b.total_amount = 9_000;
+        let mut c = sample_stream("3");
+        c.total_amount = 70;
+        let app = app_with(150, vec![a, b, c]).await;
+        assert_eq!(ids(app.clone(), "/streams?sort=total_amount").await, ["2", "1", "3"]);
+        assert_eq!(ids(app, "/streams?sort=total_amount&order=asc").await, ["3", "1", "2"]);
+    }
+
+    #[tokio::test]
+    async fn sorts_by_withdrawable_amount_to_surface_what_can_be_claimed() {
+        // identical totals, different schedules: the one furthest along has accrued most
+        let mut early = sample_stream("1");
+        early.start_ledger = 100;
+        early.end_ledger = 200;
+        let mut late = sample_stream("2");
+        late.start_ledger = 100;
+        late.end_ledger = 10_000;
+        let app = app_with(150, vec![early, late]).await;
+        assert_eq!(ids(app, "/streams?sort=withdrawable_amount").await, ["1", "2"]);
+    }
+
+    #[tokio::test]
+    async fn pagination_applies_after_sorting_and_filtering() {
+        let app = app_with(150, streams()).await;
+        // active streams only (1 and 2), ordered by end ledger descending, second page
+        assert_eq!(
+            ids(app, "/streams?status=active&sort=end_ledger&order=desc&limit=1&offset=1").await,
+            ["1"]
+        );
+    }
+
+    #[tokio::test]
+    async fn sort_applies_to_sender_and_recipient_lists_too() {
+        let app = app_with(150, streams()).await;
+        let uri = format!("/senders/{SENDER}?order=asc");
+        let got = ids(app, &uri).await;
+        let mut expected = got.clone();
+        expected.sort_by_key(|id| id.parse::<u64>().unwrap());
+        assert_eq!(got, expected);
+    }
+
+    #[tokio::test]
+    async fn unknown_sort_or_order_is_rejected() {
+        for uri in ["/streams?sort=nope", "/streams?order=sideways"] {
+            let (status, _, _) = get_json(app_with(150, streams()).await, uri).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+        }
+    }
+
     #[tokio::test]
     async fn status_filter_uses_effective_status() {
         let (_, headers, body) = get_json(app_with(250, streams()).await, "/streams?status=completed").await;

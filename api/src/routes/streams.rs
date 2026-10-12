@@ -13,7 +13,7 @@ use crate::state::AppState;
 
 /// `GET /streams` -- every known stream, newest first, with live-computed
 /// `streamed_amount`, `withdrawable_amount`, `progress_percent` and status.
-/// Supports `?status=`, `?limit=` and `?offset=`.
+/// Supports `?status=`, `?limit=`, `?offset=`, `?sort=` and `?order=`.
 pub async fn list_streams(
     State(state): State<AppState>,
     Query(params): Query<ListParams>,

@@ -19,11 +19,56 @@ pub const MAX_LIMIT: usize = 200;
 ///   (`pending`, `active`, `completed`, `cancelled`).
 /// - `limit`: page size, 1..=200 (default 50).
 /// - `offset`: number of streams to skip (default 0).
+/// - `sort`: `id` (default), `start_ledger`, `end_ledger`, `total_amount` or
+///   `withdrawable_amount`.
+/// - `order`: `desc` (default, so the default is newest first) or `asc`.
 #[derive(Debug, Default, Deserialize)]
 pub struct ListParams {
     pub status: Option<StreamStatus>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
+    pub sort: Option<SortKey>,
+    pub order: Option<SortOrder>,
+}
+
+/// Field a list endpoint can be ordered by.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SortKey {
+    /// Numeric stream id, i.e. creation order.
+    #[default]
+    Id,
+    StartLedger,
+    EndLedger,
+    TotalAmount,
+    WithdrawableAmount,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SortOrder {
+    Asc,
+    #[default]
+    Desc,
+}
+
+fn numeric_id(view: &StreamView) -> u64 {
+    view.stream.id.parse::<u64>().unwrap_or(0)
+}
+
+/// Orders by `key`, breaking ties by numeric id (then raw id) so the result is
+/// deterministic and pages never overlap or skip items between requests.
+fn compare(key: SortKey, a: &StreamView, b: &StreamView) -> std::cmp::Ordering {
+    let primary = match key {
+        SortKey::Id => numeric_id(a).cmp(&numeric_id(b)),
+        SortKey::StartLedger => a.stream.start_ledger.cmp(&b.stream.start_ledger),
+        SortKey::EndLedger => a.stream.end_ledger.cmp(&b.stream.end_ledger),
+        SortKey::TotalAmount => a.stream.total_amount.cmp(&b.stream.total_amount),
+        SortKey::WithdrawableAmount => a.withdrawable_amount.cmp(&b.withdrawable_amount),
+    };
+    primary
+        .then_with(|| numeric_id(a).cmp(&numeric_id(b)))
+        .then_with(|| a.stream.id.cmp(&b.stream.id))
 }
 
 impl ListParams {
@@ -52,7 +97,7 @@ pub fn validate_address(address: &str) -> Result<(), ApiError> {
 }
 
 /// Builds the response for a list endpoint: computes views, filters by status,
-/// orders newest-first (highest numeric id first), and applies pagination.
+/// orders (newest first unless `sort`/`order` say otherwise), and applies pagination.
 ///
 /// The body stays a plain JSON array. The size of the full filtered set is
 /// reported in the `X-Total-Count` header so clients can page without a
@@ -77,10 +122,11 @@ pub fn paginated_views(
         views.retain(|v| v.stream.status == status);
     }
 
-    views.sort_by(|a, b| {
-        let key = |v: &StreamView| v.stream.id.parse::<u64>().unwrap_or(0);
-        key(b).cmp(&key(a)).then_with(|| b.stream.id.cmp(&a.stream.id))
-    });
+    let key = params.sort.unwrap_or_default();
+    match params.order.unwrap_or_default() {
+        SortOrder::Asc => views.sort_by(|a, b| compare(key, a, b)),
+        SortOrder::Desc => views.sort_by(|a, b| compare(key, b, a)),
+    }
 
     let total = views.len();
     let page: Vec<StreamView> = views.into_iter().skip(offset).take(limit).collect();
