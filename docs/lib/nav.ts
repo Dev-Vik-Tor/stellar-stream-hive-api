@@ -19,6 +19,7 @@ export const nav: NavGroup[] = [
     items: [
       { title: "Streaming Math", href: "/docs/concepts/streaming-math" },
       { title: "Security Model", href: "/docs/concepts/security-model" },
+      { title: "Glossary", href: "/docs/concepts/glossary" },
     ],
   },
   {

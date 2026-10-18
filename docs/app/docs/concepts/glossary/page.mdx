@@ -1,0 +1,65 @@
+import CalloutBox from "@/components/CalloutBox";
+
+export const metadata = {
+  title: "Glossary",
+  description:
+    "Short definitions of the Stellar and Soroban terms used across these docs: ledger, stroop, SAC, SEP-41, strkey and cliff.",
+};
+
+# Glossary
+
+Short definitions for the Stellar and Soroban terms these docs use without
+expanding. Each entry links to the page where the term matters most.
+
+### Ledger
+
+A ledger is one block of the Stellar blockchain. A new ledger closes roughly
+every 5 seconds and has a sequence number that increases by one each time. The
+platform uses ledger sequence numbers as its clock: `start_ledger`,
+`end_ledger` and `cliff_ledger` are all ledger numbers, not timestamps. See
+[Streaming Math](/docs/concepts/streaming-math).
+
+### Stroop
+
+A stroop is the smallest unit of XLM. One XLM is 10,000,000 stroops (1 stroop
+= 0.0000001 XLM). Token amounts on the Stream contract, such as `total_amount`
+and `withdrawn`, are integers in the token's smallest unit, so 100 XLM is
+`1_000_000_000`. See [Getting Started](/docs/getting-started#quickstart-create-your-first-testnet-stream).
+
+### SAC (Stellar Asset Contract)
+
+A SAC is a Soroban smart contract that wraps a classic Stellar asset, including
+native XLM, so Soroban contracts can hold and transfer that asset. The XLM SAC
+is a contract address (`C...`) that you pass as the `token` argument when
+creating a stream. See the [Stream Contract](/docs/contracts/stream#types)
+`token` field.
+
+### SEP-41
+
+SEP-41 is the Stellar Ecosystem Proposal that defines the standard token
+interface for Soroban contracts: balances, transfers, and allowances. Any
+SEP-41-compatible token can be streamed, not only XLM. See the
+[Stream Contract](/docs/contracts/stream#types) `token` field.
+
+### Strkey
+
+A strkey is the human-readable, base32-encoded form of a Stellar key or
+contract address. It includes a checksum, so a mistyped address is rejected
+rather than silently sent to the wrong place. Account addresses start with `G`,
+and contract addresses start with `C`. The `sender` and `recipient` arguments
+are strkeys. See [Integration Guide](/docs/integration).
+
+### Cliff
+
+A cliff is the ledger before which nothing is withdrawable, even though the
+stream is already accruing. `cliff_ledger` must sit between `start_ledger` and
+`end_ledger`. Once the cliff passes, the recipient can withdraw everything that
+accrued since `start_ledger`. See
+[Streaming Math: Cliff behavior](/docs/concepts/streaming-math#cliff-behavior)
+and the [Stream Contract](/docs/contracts/stream#create_stream) examples.
+
+<CalloutBox variant="info">
+  These definitions cover only the terms above. For the contracts' full error
+  codes, see the [Stream Contract](/docs/contracts/stream#streamerror) error
+  reference.
+</CalloutBox>
