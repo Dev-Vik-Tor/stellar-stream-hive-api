@@ -155,6 +155,48 @@ let stream_id = client.create_stream(
 );
 ```
 
+#### Example: the same stream with a 15-day cliff
+
+Keep the 30-day, 3,000 XLM stream above, but hold back withdrawals until the
+15-day mark. The ledger arithmetic, at 5 seconds per ledger:
+
+- `start_ledger` = `1_000_000`
+- `end_ledger` = `1_518_400` (`start_ledger + 518_400`, 30 days)
+- `cliff_ledger` = `1_259_200` (`start_ledger + 259_200`, 15 days)
+
+What `withdrawable_amount` returns, with nothing withdrawn yet:
+
+| `current_ledger` | Point in schedule | `streamed_amount` (stroops) | `withdrawable_amount` (stroops) |
+|---|---|---|---|
+| `1_000_000` | start | `0` | `0` |
+| `1_129_600` | 7.5 days, before the cliff | `7_500_000_000` | `0` |
+| `1_259_199` | one ledger before the cliff | `14_999_942_129` | `0` |
+| `1_259_200` | the cliff | `15_000_000_000` | `15_000_000_000` |
+| `1_518_400` | end | `30_000_000_000` | `30_000_000_000` |
+
+Before the cliff, the stream keeps accruing, but `withdrawable_amount` is forced
+to `0`. The value at `1_259_199` is
+`floor(30_000_000_000 * 259_199 / 518_400)`, which truncates the exact
+`14_999_942_129.63` stroops.
+
+At `cliff_ledger` the recipient can withdraw everything that accrued since
+`start_ledger` in one step (1,500 XLM here), not only what accrues after the
+cliff. The cliff delays withdrawal; it does not restart the accrual clock. See
+[Streaming Math: Cliff behavior](/docs/concepts/streaming-math#cliff-behavior).
+
+```rust
+let stream_id = client.create_stream(
+    &sender,
+    &recipient,
+    &token_address,
+    &30_000_000_000i128, // 3,000 XLM at 7 decimals
+    &1_000_000u32,       // start_ledger
+    &1_518_400u32,       // end_ledger: start + 518_400 (30 days)
+    &1_259_200u32,       // cliff_ledger: start + 259_200 (15 days)
+    &true,
+);
+```
+
 ### `streamed_amount`
 
 ```rust

@@ -127,6 +127,48 @@ That's the entire lifecycle. For the fund-safety reasoning behind why
 that holds the money is a separate contract from the one you just called, see
 [Security Model](/docs/concepts/security-model).
 
+### Variant: a stream with a cliff
+
+The quickstart above has no cliff, so the recipient can withdraw from the first
+ledger. To hold withdrawals back, set `cliff_ledger` between `start_ledger` and
+`end_ledger`. This example streams 100 XLM over 720 ledgers (about one hour)
+with a cliff at the halfway point, 360 ledgers (about 30 minutes) after the
+start:
+
+- `start_ledger` = `CURRENT_LEDGER`
+- `end_ledger` = `CURRENT_LEDGER + 720`
+- `cliff_ledger` = `CURRENT_LEDGER + 360`
+
+```bash
+stellar contract invoke \
+  --id <STREAM_CONTRACT_ID> \
+  --source sender \
+  --network testnet \
+  -- create_stream \
+  --sender "$(stellar keys address sender)" \
+  --recipient "$(stellar keys address recipient)" \
+  --token <XLM_SAC_CONTRACT_ID> \
+  --total_amount 1000000000 \
+  --start_ledger "$CURRENT_LEDGER" \
+  --end_ledger $((CURRENT_LEDGER + 720)) \
+  --cliff_ledger $((CURRENT_LEDGER + 360)) \
+  --cancellable true
+```
+
+Using `streamed_amount` and `withdrawable_amount` from
+[Streaming Math](/docs/concepts/streaming-math#cliff-behavior), with nothing
+withdrawn yet:
+
+| `current_ledger` | `streamed_amount` (stroops) | `withdrawable_amount` (stroops) |
+|---|---|---|
+| `CURRENT_LEDGER` (start) | `0` | `0` |
+| `CURRENT_LEDGER + 359` | `498_611_111` | `0` (one ledger before the cliff) |
+| `CURRENT_LEDGER + 360` (cliff) | `500_000_000` | `500_000_000` |
+| `CURRENT_LEDGER + 720` (end) | `1_000_000_000` | `1_000_000_000` |
+
+At the cliff, the recipient can withdraw the full 50 XLM accrued since the
+start, not just the portion that accrues after the cliff.
+
 ## Network guide
 
 | Network | Horizon | Soroban RPC | Notes |
