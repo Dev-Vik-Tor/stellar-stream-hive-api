@@ -184,6 +184,147 @@ leaves the `PENDING` status -- see the
 for the full submit/poll lifecycle, which is generic to any Soroban contract
 call and not specific to this platform.
 
+### Write example: create a stream from the browser with Freighter
+
+This end-to-end example builds a `create_stream` transaction, simulates it,
+signs it with [Freighter](https://www.freighter.app/) through
+`@stellar/freighter-api`, submits it, and polls until the result is final. It
+runs in a browser page, because Freighter injects its signing API into the
+page.
+
+Versions: the code was type-checked against `@stellar/stellar-sdk` **17.2.1**
+and `@stellar/freighter-api` **6.0.1**. It has not yet been run end-to-end
+against testnet.
+
+```bash
+npm install @stellar/stellar-sdk@17.2.1 @stellar/freighter-api@6.0.1
+```
+
+<CalloutBox variant="warning" title="Placeholders">
+  `<STREAM_CONTRACT_ID>` and `<XLM_SAC_CONTRACT_ID>` are placeholders. The
+  contracts are not deployed yet -- see
+  [Deployed contract addresses](#deployed-contract-addresses).
+</CalloutBox>
+
+```typescript
+import {
+  Address,
+  BASE_FEE,
+  Contract,
+  Networks,
+  nativeToScVal,
+  rpc,
+  scValToNative,
+  TransactionBuilder,
+} from "@stellar/stellar-sdk";
+import {
+  isConnected,
+  requestAccess,
+  signTransaction,
+} from "@stellar/freighter-api";
+
+const RPC_URL = "https://soroban-testnet.stellar.org";
+const NETWORK_PASSPHRASE = Networks.TESTNET;
+const STREAM_CONTRACT_ID = "<STREAM_CONTRACT_ID>";
+
+const server = new rpc.Server(RPC_URL);
+
+export interface CreateStreamParams {
+  token: string;
+  recipient: string;
+  totalAmount: bigint;
+  startLedger: number;
+  endLedger: number;
+  cliffLedger: number;
+  cancellable: boolean;
+}
+
+/** Builds, simulates, signs with Freighter, submits and polls one create_stream call. */
+export async function createStream(params: CreateStreamParams): Promise<bigint> {
+  // 1. Make sure Freighter is installed and the user has granted this site access.
+  const connected = await isConnected();
+  if (connected.error || !connected.isConnected) {
+    throw new Error("Freighter is not installed or not connected");
+  }
+  const access = await requestAccess();
+  if (access.error) {
+    throw new Error(`Freighter access was refused: ${access.error.message}`);
+  }
+  const sender = access.address;
+
+  // 2. Build the transaction with the Stream contract's create_stream arguments.
+  const account = await server.getAccount(sender);
+  const stream = new Contract(STREAM_CONTRACT_ID);
+  const unsigned = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(
+      stream.call(
+        "create_stream",
+        new Address(sender).toScVal(),
+        new Address(params.recipient).toScVal(),
+        new Address(params.token).toScVal(),
+        nativeToScVal(params.totalAmount, { type: "i128" }),
+        nativeToScVal(params.startLedger, { type: "u32" }),
+        nativeToScVal(params.endLedger, { type: "u32" }),
+        nativeToScVal(params.cliffLedger, { type: "u32" }),
+        nativeToScVal(params.cancellable, { type: "bool" }),
+      ),
+    )
+    .setTimeout(30)
+    .build();
+
+  // 3. Simulate, and attach the resource footprint and fee the network asks for.
+  const prepared = await server.prepareTransaction(unsigned);
+
+  // 4. Sign in Freighter. The wallet checks that the signer matches `address`.
+  const signed = await signTransaction(prepared.toXDR(), {
+    networkPassphrase: NETWORK_PASSPHRASE,
+    address: sender,
+  });
+  if (signed.error) {
+    throw new Error(`Signing was rejected: ${signed.error.message}`);
+  }
+  const signedTx = TransactionBuilder.fromXDR(signed.signedTxXdr, NETWORK_PASSPHRASE);
+
+  // 5. Submit and poll until the ledger that includes it closes.
+  const sent = await server.sendTransaction(signedTx);
+  if (sent.status === "ERROR") {
+    throw new Error(`Submission rejected with status ${sent.status}`);
+  }
+
+  let result = await server.getTransaction(sent.hash);
+  while (result.status === rpc.Api.GetTransactionStatus.NOT_FOUND) {
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    result = await server.getTransaction(sent.hash);
+  }
+  if (result.status !== rpc.Api.GetTransactionStatus.SUCCESS) {
+    throw new Error(`Transaction failed with status ${result.status}`);
+  }
+
+  // create_stream returns the new u64 stream id.
+  return scValToNative(result.returnValue!) as bigint;
+}
+```
+
+Call it with amounts as `bigint`, not `number`, and ledgers relative to the
+current ledger from `server.getLatestLedger()`:
+
+```typescript
+const { sequence } = await server.getLatestLedger();
+
+const streamId = await createStream({
+  token: "<XLM_SAC_CONTRACT_ID>",
+  recipient: "GABC...XYZ",
+  totalAmount: 1_000_000_000n, // 100 XLM in stroops
+  startLedger: sequence,
+  endLedger: sequence + 720, // about one hour at ~5s per ledger
+  cliffLedger: sequence, // no cliff; use sequence + 360 for a halfway cliff
+  cancellable: true,
+});
+```
+
 <CalloutBox variant="info" title="When to prefer direct contract calls over the API">
   Reach for direct RPC calls instead of the indexer API when you need: (1) a
   write operation, (2) absolute real-time reads with zero dependency on this
