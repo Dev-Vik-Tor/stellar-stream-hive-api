@@ -180,6 +180,54 @@ start, not just the portion that accrues after the cliff.
 The API's indexer reads contract events from the Soroban RPC (`SOROBAN_RPC_URL`
 environment variable, default: testnet) -- see [`api/README.md`](https://github.com/Stellar-Hive/stellar-stream-hive-api/blob/main/api/README.md).
 
+## Troubleshooting: error codes
+
+When a contract call fails, the Stellar CLI prints the code as
+`Error(Contract, #N)`. Find the contract that made the call, then look up `N`
+below. Each table is copied from that contract's `error.rs` in
+[`stellar-stream-hive-contract`](https://github.com/Stellar-Hive/stellar-stream-hive-contract).
+
+### Stream contract (codes 1-13)
+
+| Code | Name | Meaning |
+|---|---|---|
+| 1 | `AlreadyInitialized` | `initialize` was called a second time. |
+| 2 | `NotInitialized` | A function ran before `initialize`. |
+| 3 | `Unauthorized` | The caller is not the stream's sender or recipient. |
+| 4 | `InvalidAmount` | An amount was zero or negative. |
+| 5 | `InvalidTimeRange` | `end_ledger` was not after `start_ledger`. |
+| 6 | `InvalidCliff` | `cliff_ledger` was outside `[start_ledger, end_ledger]`. |
+| 7 | `StreamNotFound` | No stream exists with that id. |
+| 8 | `BeforeCliff` | A withdrawal was attempted before `cliff_ledger`. |
+| 9 | `ExceedsWithdrawable` | The withdrawal amount is more than `withdrawable_amount`. |
+| 10 | `NotCancellable` | `cancel_stream` was called on a stream created with `cancellable = false`. |
+| 11 | `AlreadyFinalized` | The stream is already cancelled or completed. |
+| 12 | `MathOverflow` | Checked arithmetic overflowed or underflowed. |
+| 13 | `Paused` | `create_stream` was called while the contract is paused. |
+
+### Vault contract (codes 1-7)
+
+| Code | Name | Meaning |
+|---|---|---|
+| 1 | `AlreadyInitialized` | `initialize` was called a second time. |
+| 2 | `NotInitialized` | A function ran before `initialize`. |
+| 3 | `Unauthorized` | The caller is not the configured Stream contract or the admin. |
+| 4 | `InvalidAmount` | An amount was zero or negative. |
+| 5 | `InsufficientBalance` | The stream's locked balance is smaller than the amount requested. |
+| 6 | `MathOverflow` | Checked arithmetic overflowed or underflowed. |
+| 7 | `TokenMismatch` | The token does not match the one the stream was funded with. |
+
+### Registry contract (codes 1-6)
+
+| Code | Name | Meaning |
+|---|---|---|
+| 1 | `AlreadyInitialized` | `initialize` was called a second time. |
+| 2 | `NotInitialized` | A function ran before `initialize`. |
+| 3 | `InvalidAmount` | An amount was negative. |
+| 4 | `AlreadyRegistered` | `register_stream` was called twice with the same `stream_id`. |
+| 5 | `StreamNotFound` | `update_stream` referenced a stream that was never registered. |
+| 6 | `MathOverflow` | Checked arithmetic overflowed or underflowed. |
+
 ## Deployed contract addresses
 
 <CalloutBox variant="warning" title="Not yet deployed">
